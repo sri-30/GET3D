@@ -1,1 +1,4 @@
 .DS_Store
+pretrained_model
+**/__pycache__/
+save_inference_results

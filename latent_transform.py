@@ -1,22 +1,30 @@
-import copy
-import os
-
-import numpy as np
 import torch
 import dnnlib
 from torch_utils.ops import conv2d_gradfix
 from torch_utils.ops import grid_sample_gradfix
-from metrics import metric_main
-from training.inference_utils import save_visualization, save_visualization_for_interpolation, \
-    save_textured_mesh_for_inference, save_geo_for_inference
+import copy
 
+import numpy as np
+import pickle
 
-def clean_training_set_kwargs_for_metrics(training_set_kwargs):
-    if 'add_camera_cond' in training_set_kwargs:
-        training_set_kwargs['add_camera_cond'] = True
-    return training_set_kwargs
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-def inference(
+class TransformLatent(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.flatten = torch.nn.Flatten()
+        self.linear_relu_stack = torch.nn.Sequential(
+            torch.nn.Linear(512, 512),
+            torch.nn.ReLU(),
+            torch.nn.Linear(512, 512),
+        )
+    
+    def forward(self, x):
+        x = self.flatten(x)
+        logits = self.linear_relu_stack(x)
+        return logits
+
+def constructGenerator(
         run_dir='.',  # Output directory.
         training_set_kwargs={},  # Options for training set.
         G_kwargs={},  # Options for generator network.
@@ -39,6 +47,7 @@ def inference(
     from torch_utils.ops import upfirdn2d
     from torch_utils.ops import bias_act
     from torch_utils.ops import filtered_lrelu
+
     upfirdn2d._init()
     bias_act._init()
     filtered_lrelu._init()
@@ -58,7 +67,7 @@ def inference(
         c_dim=0, img_resolution=training_set_kwargs['resolution'] if 'resolution' in training_set_kwargs else 1024, img_channels=3)
     G_kwargs['device'] = device
 
-    G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(
+    G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(True).to(
         device)  # subclass of torch.nn.Module
     # D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
     #     device)  # subclass of torch.nn.Module
@@ -69,54 +78,53 @@ def inference(
         G.load_state_dict(model_state_dict['G'], strict=True)
         G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
         # D.load_state_dict(model_state_dict['D'], strict=True)
-    grid_size = (1, 1)
-    n_shape = grid_size[0] * grid_size[1]
+    return G_ema
 
-    grid_c = torch.ones(n_shape, device=device).split(1)
-    grid_z = code_z.split(1)
-    grid_tex_z = code_tex_z.split(1)
+def eval_get3d(G_ema, grid_z, grid_tex_z, grid_c):
+    G_ema.update_w_avg()
+    camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_z[0].shape[0])
+    if grid_tex_z is None:
+        grid_tex_z = grid_z
+    for i_camera, camera in enumerate(camera_list):
+        images_list = []
+        for z, geo_z, c in zip(grid_tex_z, grid_z, grid_c):
+            img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
+                z=z, geo_z=geo_z, c=c, noise_mode='const',
+                generate_no_light=True, truncation_psi=0.7, camera=camera)
+            rgb_img = img[:, :3]
+            save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach()
+            images_list.append(save_img.cpu().numpy())
+    return images_list
 
-    print('==> generate ')
-    save_visualization(
-        G_ema, grid_z, grid_c, run_dir, 0, grid_size, 0,
-        save_all=False,
-        grid_tex_z=grid_tex_z
-    )
+def train(model, data, loss_fn, optimizer):
+    model.train()
+    for batch, latents in enumerate(data):
+        # Transform latents with model
+        latents_edited = model(latents)
+        # Get output of GET3D on latents
+        # Calculate CLIP loss
+        # Backpropagate loss
+        # Update optimizer
 
-    if inference_to_generate_textured_mesh:
-        print('==> generate inference 3d shapes with texture')
-        save_textured_mesh_for_inference(
-            G_ema, grid_z, grid_c, run_dir, save_mesh_dir='texture_mesh_for_inference',
-            c_to_compute_w_avg=None, grid_tex_z=grid_tex_z)
+    
+# model = TransformLatent().to(device)
 
-    if inference_save_interpolation:
-        print('==> generate interpolation results')
-        save_visualization_for_interpolation(G_ema, save_dir=os.path.join(run_dir, 'interpolation'))
-
-    if inference_compute_fid:
-        print('==> compute FID scores for generation')
-        for metric in metrics:
-            training_set_kwargs = clean_training_set_kwargs_for_metrics(training_set_kwargs)
-            training_set_kwargs['split'] = 'test'
-            result_dict = metric_main.calc_metric(
-                metric=metric, G=G_ema,
-                dataset_kwargs=training_set_kwargs, num_gpus=num_gpus, rank=rank,
-                device=device)
-            metric_main.report_metric(result_dict, run_dir=run_dir, snapshot_pkl=resume_pretrain)
-
-    if inference_generate_geo:
-        print('==> generate 7500 shapes for evaluation')
-        save_geo_for_inference(G_ema, run_dir)
-
-import pickle
+# learning_rate = 1e-3
+# batch_size = 64
+# epochs = 5
+# print(model)
 
 c = None
 with open('test.pickle', 'rb') as f:
     c = pickle.load(f)
+G_ema = constructGenerator(**c)
 
-device = torch.device('cuda', 0)
+grid_size = (1, 1)
+n_shape = grid_size[0] * grid_size[1]
 
-code_z = torch.zeros([1, 512], device=device)
-code_tex_z = torch.zeros([1, 512], device=device)
+grid_c = torch.ones(n_shape, device=device).split(1)
+grid_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for geometry
+grid_tex_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for texture
 
-inference(rank=0, **c, code_z=code_z, code_tex_z=code_tex_z)
+m = eval_get3d(G_ema, grid_z, grid_tex_z, grid_c)
+print(m)

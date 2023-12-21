@@ -8,6 +8,7 @@ import numpy as np
 import pickle
 
 from training.inference_utils import save_image_grid
+from clip_utils import clip_loss
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -100,15 +101,25 @@ def eval_get3d(G_ema, grid_z, grid_tex_z, grid_c):
     images = np.concatenate(images_list, axis=0)
     return images
 
-def train(model, data, loss_fn, optimizer):
+def train(g_ema, model, data, loss_fn, optimizer):
     model.train()
+    grid_c = torch.ones(n_shape, device=device).split(1)
     for batch, latents in enumerate(data):
         # Transform latents with model
         latents_edited = model(latents)
+
         # Get output of GET3D on latents
+        output = eval_get3d(g_ema, latents_edited, None, grid_c)
+        
         # Calculate CLIP loss
+        loss = clip_loss(output, "sports car")
+
         # Backpropagate loss
+        optimizer.zero_grad()
+        loss.backward()
+
         # Update optimizer
+        optimizer.step()
 
     
 # model = TransformLatent().to(device)

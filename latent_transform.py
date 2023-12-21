@@ -7,6 +7,8 @@ import copy
 import numpy as np
 import pickle
 
+from training.inference_utils import save_image_grid
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 class TransformLatent(torch.nn.Module):
@@ -39,11 +41,12 @@ def constructGenerator(
         inference_save_interpolation=False,
         inference_compute_fid=False,
         inference_generate_geo=False,
-        code_z=torch.randn([1, 512], device=torch.device('cuda', 0)).split(1) ,
-        code_tex_z=torch.randn([1, 512], device=torch.device('cuda', 0)).split(1),
+        code_z=None ,
+        code_tex_z=None,
         text_prompt="",
         **dummy_kawargs
 ):
+    print("constructing")
     from torch_utils.ops import upfirdn2d
     from torch_utils.ops import bias_act
     from torch_utils.ops import filtered_lrelu
@@ -92,9 +95,10 @@ def eval_get3d(G_ema, grid_z, grid_tex_z, grid_c):
                 z=z, geo_z=geo_z, c=c, noise_mode='const',
                 generate_no_light=True, truncation_psi=0.7, camera=camera)
             rgb_img = img[:, :3]
-            save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach()
+            save_img = rgb_img.detach()
             images_list.append(save_img.cpu().numpy())
-    return images_list
+    images = np.concatenate(images_list, axis=0)
+    return images
 
 def train(model, data, loss_fn, optimizer):
     model.train()
@@ -117,14 +121,19 @@ def train(model, data, loss_fn, optimizer):
 c = None
 with open('test.pickle', 'rb') as f:
     c = pickle.load(f)
+
 G_ema = constructGenerator(**c)
 
 grid_size = (1, 1)
 n_shape = grid_size[0] * grid_size[1]
 
 grid_c = torch.ones(n_shape, device=device).split(1)
-grid_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for geometry
-grid_tex_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for texture
+grid_z = torch.zeros([n_shape, 512], device=device).split(1)  # random code for geometry
+grid_tex_z = torch.randn([n_shape, 512], device=device).split(1)  # random code for texture
 
 m = eval_get3d(G_ema, grid_z, grid_tex_z, grid_c)
-print(m)
+
+img = save_image_grid(m, None, [-1, 1], grid_size)
+
+with open('output3.pickle', 'wb') as f:
+    pickle.dump(img, f)

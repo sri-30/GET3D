@@ -92,6 +92,7 @@ def eval_get3d(G_ema, grid_z, grid_tex_z, grid_c):
     for i_camera, camera in enumerate(camera_list):
         images_list = []
         for z, geo_z, c in zip(grid_tex_z, grid_z, grid_c):
+            print(z)
             img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
                 z=z, geo_z=geo_z, c=c, noise_mode='const',
                 generate_no_light=True, truncation_psi=0.7, camera=camera)
@@ -101,33 +102,48 @@ def eval_get3d(G_ema, grid_z, grid_tex_z, grid_c):
     images = np.concatenate(images_list, axis=0)
     return images
 
-def train(g_ema, model, data, loss_fn, optimizer):
-    model.train()
-    grid_c = torch.ones(n_shape, device=device).split(1)
-    for batch, latents in enumerate(data):
-        # Transform latents with model
-        latents_edited = model(latents)
-
-        # Get output of GET3D on latents
-        output = eval_get3d(g_ema, latents_edited, None, grid_c)
+def eval_get3d_tensor(G_ema, grid_z, grid_tex_z, grid_c):
+    G_ema.update_w_avg()
+    camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_z[0].shape[0])
+    camera = camera_list[4]
+    output_tensor = None
+    for i, _ in enumerate(grid_z):
+        geo_z = grid_z[i]
+        tex_z = grid_tex_z[i]
+        img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
+            z=tex_z, geo_z=geo_z, c=c, noise_mode='const',
+            generate_no_light=True, truncation_psi=0.7, camera=camera)
+        rgb_img = img[:, :3]
+        if output_tensor is None:
+            output_tensor = torch.cat((rgb_img, ))
+        else:
+            output_tensor = torch.cat((output_tensor, rgb_img))
+    return output_tensor
         
-        # Calculate CLIP loss
-        loss = clip_loss(output, "sports car")
 
-        # Backpropagate loss
-        optimizer.zero_grad()
-        loss.backward()
 
-        # Update optimizer
-        optimizer.step()
+def train(g_ema, model, data, optimizer):
+    model.train()
+    grid_c = torch.ones(1, device=device).split(1)
+    #for batch, latents in enumerate(data):
+    # Transform latents with model
+    latents_edited = model(data[0])
+
+    # Get output of GET3D on latents
+    output = eval_get3d(g_ema, (latents_edited, ), None, grid_c)
+    
+    # Calculate CLIP loss
+    loss = clip_loss(output, "sports car")
+
+    # Backpropagate loss
+    optimizer.zero_grad()
+    loss.backward()
+
+    # Update optimizer
+    optimizer.step()
 
     
-# model = TransformLatent().to(device)
 
-# learning_rate = 1e-3
-# batch_size = 64
-# epochs = 5
-# print(model)
 
 c = None
 with open('test.pickle', 'rb') as f:
@@ -135,16 +151,40 @@ with open('test.pickle', 'rb') as f:
 
 G_ema = constructGenerator(**c)
 
-grid_size = (1, 1)
-n_shape = grid_size[0] * grid_size[1]
+n_shape = 5
 
-grid_c = torch.ones(n_shape, device=device).split(1)
-grid_z = torch.zeros([n_shape, 512], device=device).split(1)  # random code for geometry
-grid_tex_z = torch.randn([n_shape, 512], device=device).split(1)  # random code for texture
+grid_c = torch.ones(n_shape, device=device)
+grid_z = torch.zeros([n_shape, 1, 512], device=device)  # random code for geometry
+grid_tex_z = torch.randn([n_shape, 1, 512], device=device)  # random code for texture
 
-m = eval_get3d(G_ema, grid_z, grid_tex_z, grid_c)
+x = eval_get3d_tensor(G_ema, grid_z, grid_tex_z, grid_c)
 
-img = save_image_grid(m, None, [-1, 1], grid_size)
+with open('output6.pickle', 'wb') as f:
+    pickle.dump(x.cpu(), f)
 
-with open('output3.pickle', 'wb') as f:
-    pickle.dump(img, f)
+# model = TransformLatent().to(device)
+
+# learning_rate = 1e-3
+# batch_size = 64
+# epochs = 5
+
+# print(model)
+
+# optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
+
+# train(G_ema, model, torch.zeros([n_shape, 512], device=device).split(1), optimizer)
+
+# Get output of generator
+# grid_size = (5, 5)
+# n_shape = grid_size[0] * grid_size[1]
+
+# grid_c = torch.ones(n_shape, device=device).split(1)
+# grid_z = torch.zeros([n_shape, 512], device=device).split(1)  # random code for geometry
+# grid_tex_z = torch.randn([n_shape, 512], device=device).split(1)  # random code for texture
+
+# m = eval_get3d(G_ema, grid_z, grid_tex_z, grid_c)
+
+# img = save_image_grid(m, None, [-1, 1], grid_size)
+
+# with open('output4.pickle', 'wb') as f:
+#     pickle.dump(img, f)

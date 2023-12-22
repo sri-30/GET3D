@@ -23,9 +23,9 @@ import pickle
 
 # ----------------------------------------------------------------------------
 def subprocess_fn(rank, c, temp_dir):
-    print(f'\nRank::::::::: {rank}\n')
-    with open("test.pickle", "wb") as outfile:
-        pickle.dump(c, outfile)
+    # print(f'\nRank::::::::: {rank}\n')
+    # with open("test.pickle", "wb") as outfile:
+    #     pickle.dump(c, outfile)
     dnnlib.util.Logger(file_name=os.path.join(c.run_dir, 'log.txt'), file_mode='a', should_flush=True)
 
     # Init torch.distributed.

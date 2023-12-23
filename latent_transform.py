@@ -157,11 +157,15 @@ def train(g_ema, model, data, optimizer):
 
     model_clip, preprocess = clip.load("ViT-B/32", device=device)
     
-    output_processed = preprocess_clip(output, model_clip.visual.input_resolution)
+    output_processed = preprocess_clip(output[0], model_clip.visual.input_resolution).unsqueeze(0)
 
-    #output_encoded = model_clip.encode_image(output_processed)
-    loss, _ = model_clip(output_processed, 'Sports Car')
-    print(loss)
+    text = clip.tokenize("Sports Car").to(device)
+
+    # image_features = model_clip.encode_image(output_processed)
+    # text_features = model_clip.encode_text(text)
+
+    loss, _ = model_clip(output_processed, text)
+    
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()

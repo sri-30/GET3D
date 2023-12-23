@@ -8,7 +8,6 @@ import numpy as np
 import pickle
 
 from training.inference_utils import save_image_grid
-from clip_utils import clip_loss
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -119,30 +118,69 @@ def eval_get3d_tensor(G_ema, grid_z, grid_tex_z, grid_c):
         else:
             output_tensor = torch.cat((output_tensor, rgb_img))
     return output_tensor
-        
 
+def preprocess_rgb(array):
+    lo, hi = -1, 1
+    img = array
+    img = img.transpose(1, 3)
+    img = img.transpose(1, 2)
+    img = (img - lo) * (255 / (hi - lo))
+    img.clip(0, 255)
+    return img
+
+from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, InterpolationMode
+
+def preprocess_clip(array, size):
+    lo, hi = -1, 1
+    img = array
+    img = (img - lo) * (255 / (hi - lo))
+    img.clip(0, 255)
+    transform_clip = Compose([
+        Resize(size, interpolation=InterpolationMode.BICUBIC),
+        CenterCrop(size),
+        Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+    ])
+    return transform_clip(img)
+
+import clip
+from PIL import Image
+from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, InterpolationMode
 
 def train(g_ema, model, data, optimizer):
     model.train()
-    grid_c = torch.ones(1, device=device).split(1)
+    grid_c = torch.ones(1, device=device)
     #for batch, latents in enumerate(data):
     # Transform latents with model
-    latents_edited = model(data[0])
-
+    latents_edited = model(data).reshape(data.shape[0], 1, data.shape[2])
     # Get output of GET3D on latents
-    output = eval_get3d(g_ema, (latents_edited, ), None, grid_c)
-    
-    # Calculate CLIP loss
-    loss = clip_loss(output, "sports car")
+    output = eval_get3d_tensor(g_ema, latents_edited, torch.zeros([data.shape[0], 1, 512], device=device), grid_c)
 
-    # Backpropagate loss
+    model_clip, preprocess = clip.load("ViT-B/32", device=device)
+    
+    output_processed = preprocess_clip(output, model_clip.visual.input_resolution)
+
+    #output_encoded = model_clip.encode_image(output_processed)
+    loss, _ = model_clip(output_processed, 'Sports Car')
+    print(loss)
     optimizer.zero_grad()
     loss.backward()
-
-    # Update optimizer
     optimizer.step()
-
     
+    # Calculate CLIP loss
+    #i = Image.fromarray(output_processed)
+    # print(output_processed[0].shape)
+    # model, preprocess = clip.load("ViT-B/32", device=device)
+    # image = preprocess(output_processed[0])
+    #preprocessed = loss.preprocess(output_processed[0])
+    #loss = loss(loss.preprocess(output_processed[2]), "sports car")
+
+    # # Backpropagate loss
+    # optimizer.zero_grad()
+    # loss.backward()
+
+    # # Update optimizer
+    # optimizer.step()
+
 
 
 c = None
@@ -151,16 +189,45 @@ with open('test.pickle', 'rb') as f:
 
 G_ema = constructGenerator(**c)
 
-n_shape = 5
+n_shape = 1
 
 grid_c = torch.ones(n_shape, device=device)
 grid_z = torch.zeros([n_shape, 1, 512], device=device)  # random code for geometry
 grid_tex_z = torch.randn([n_shape, 1, 512], device=device)  # random code for texture
 
-x = eval_get3d_tensor(G_ema, grid_z, grid_tex_z, grid_c)
+# x = eval_get3d_tensor(G_ema, grid_z, grid_tex_z, grid_c)
 
-with open('output6.pickle', 'wb') as f:
-    pickle.dump(x.cpu(), f)
+model = TransformLatent().to(device)
+
+learning_rate = 1e-3
+batch_size = 64
+epochs = 5
+
+print(model)
+
+optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
+
+train(G_ema, model, grid_z, optimizer)
+
+
+
+
+# c = None
+# with open('test.pickle', 'rb') as f:
+#     c = pickle.load(f)
+
+# G_ema = constructGenerator(**c)
+
+# n_shape = 5
+
+# grid_c = torch.ones(n_shape, device=device)
+# grid_z = torch.zeros([n_shape, 1, 512], device=device)  # random code for geometry
+# grid_tex_z = torch.randn([n_shape, 1, 512], device=device)  # random code for texture
+
+# x = eval_get3d_tensor(G_ema, grid_z, grid_tex_z, grid_c)
+
+# with open('output6.pickle', 'wb') as f:
+#     pickle.dump(x.cpu(), f)
 
 # model = TransformLatent().to(device)
 

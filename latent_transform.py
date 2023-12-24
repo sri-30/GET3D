@@ -142,49 +142,28 @@ def preprocess_clip(array, size):
     ])
     return transform_clip(img)
 
-import clip
-from PIL import Image
-from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, InterpolationMode
+from clip_utils.clip_loss import CLIPLoss
 
 def train(g_ema, model, data, optimizer):
     model.train()
-    grid_c = torch.ones(1, device=device)
-    #for batch, latents in enumerate(data):
-    # Transform latents with model
-    latents_edited = model(data).reshape(data.shape[0], 1, data.shape[2])
-    # Get output of GET3D on latents
-    output = eval_get3d_tensor(g_ema, latents_edited, torch.zeros([data.shape[0], 1, 512], device=device), grid_c)
+    loss_fn = CLIPLoss('sports car')
+    grid_c = torch.ones(1, requires_grad=False, device='cuda')
 
-    model_clip, preprocess = clip.load("ViT-B/32", device=device)
-    
-    output_processed = preprocess_clip(output[0], model_clip.visual.input_resolution).unsqueeze(0)
+    for grid_z in data:
+        # Transform latents with model
+        latents_edited = model(grid_z).reshape(1, 1, 512)
 
-    text = clip.tokenize("Sports Car").to(device)
+        # Get output of GET3D on latents
+        output = eval_get3d_tensor(g_ema, latents_edited, torch.zeros([1, 1, 512], device='cuda'), grid_c)
 
-    # image_features = model_clip.encode_image(output_processed)
-    # text_features = model_clip.encode_text(text)
-
-    loss, _ = model_clip(output_processed, text)
-    
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-    
-    # Calculate CLIP loss
-    #i = Image.fromarray(output_processed)
-    # print(output_processed[0].shape)
-    # model, preprocess = clip.load("ViT-B/32", device=device)
-    # image = preprocess(output_processed[0])
-    #preprocessed = loss.preprocess(output_processed[0])
-    #loss = loss(loss.preprocess(output_processed[2]), "sports car")
-
-    # # Backpropagate loss
-    # optimizer.zero_grad()
-    # loss.backward()
-
-    # # Update optimizer
-    # optimizer.step()
-
+        # Get CLIP Loss
+        loss = loss_fn(output[0])
+        
+        # Backpropagation
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        print(loss)
 
 
 c = None
@@ -193,7 +172,7 @@ with open('test.pickle', 'rb') as f:
 
 G_ema = constructGenerator(**c)
 
-n_shape = 1
+n_shape = 5
 
 grid_c = torch.ones(n_shape, device=device)
 grid_z = torch.zeros([n_shape, 1, 512], device=device)  # random code for geometry

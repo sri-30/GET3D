@@ -110,7 +110,7 @@ def eval_get3d_tensor(G_ema, grid_z, grid_tex_z, grid_c):
         geo_z = grid_z[i]
         tex_z = grid_tex_z[i]
         img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
-            z=tex_z, geo_z=geo_z, c=c, noise_mode='const',
+            z=tex_z, geo_z=geo_z, c=grid_c, noise_mode='const',
             generate_no_light=True, truncation_psi=0.7, camera=camera)
         rgb_img = img[:, :3]
         if output_tensor is None:
@@ -118,6 +118,16 @@ def eval_get3d_tensor(G_ema, grid_z, grid_tex_z, grid_c):
         else:
             output_tensor = torch.cat((output_tensor, rgb_img))
     return output_tensor
+
+def eval_get3d_single(G_ema, geo_z, tex_z, grid_c):
+    G_ema.update_w_avg()
+    camera_list = G_ema.synthesis.generate_rotate_camera_list()
+    camera = camera_list[4]
+    img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
+        z=tex_z, geo_z=geo_z, c=grid_c, noise_mode='const',
+        generate_no_light=True, truncation_psi=0.7, camera=camera)
+    rgb_img = img[:, :3]
+    return rgb_img
 
 def preprocess_rgb(array):
     lo, hi = -1, 1
@@ -143,18 +153,26 @@ def preprocess_clip(array, size):
     return transform_clip(img)
 
 from clip_utils.clip_loss import CLIPLoss
+from PIL import Image
 
-def train(g_ema, model, data, optimizer):
+def train(G, model, data, optimizer):
     model.train()
     loss_fn = CLIPLoss('sports car')
-    grid_c = torch.ones(1, requires_grad=False, device='cuda')
+
+    cur_output = None
 
     for grid_z in data:
+        g_ema = copy.deepcopy(G).eval()
+
         # Transform latents with model
-        latents_edited = model(grid_z).reshape(1, 1, 512)
+        grid_z.requires_grad = True
+        latents_edited = model(grid_z).reshape(1, 512)
 
         # Get output of GET3D on latents
-        output = eval_get3d_tensor(g_ema, latents_edited, torch.zeros([1, 1, 512], device='cuda'), grid_c)
+        grid_c = torch.ones(1, device='cuda')
+        output = eval_get3d_single(g_ema, latents_edited, torch.zeros([1, 512], device='cuda'), grid_c)
+
+        cur_output = output.detach()
 
         # Get CLIP Loss
         loss = loss_fn(output[0])
@@ -164,6 +182,9 @@ def train(g_ema, model, data, optimizer):
         optimizer.step()
         optimizer.zero_grad()
         print(loss)
+    with open('output.pickle', 'wb') as f:
+        pickle.dump(cur_output.cpu(), f)
+    
 
 
 c = None
@@ -172,7 +193,7 @@ with open('test.pickle', 'rb') as f:
 
 G_ema = constructGenerator(**c)
 
-n_shape = 5
+n_shape = 50
 
 grid_c = torch.ones(n_shape, device=device)
 grid_z = torch.zeros([n_shape, 1, 512], device=device)  # random code for geometry

@@ -155,35 +155,62 @@ def preprocess_clip(array, size):
 from clip_utils.clip_loss import CLIPLoss
 from PIL import Image
 
-def train(G, model, data, optimizer):
+def train(G, model, data_geo_z, data_tex_z, optimizer):
     model.train()
-    loss_fn = CLIPLoss('sports car')
+    loss_fn = CLIPLoss('SUV')
 
     cur_output = None
 
-    for grid_z in data:
-        g_ema = copy.deepcopy(G).eval()
+    latent_codes = []
 
-        # Transform latents with model
-        grid_z.requires_grad = True
-        latents_edited = model(grid_z).reshape(1, 512)
+    n_epochs = 15
 
-        # Get output of GET3D on latents
-        grid_c = torch.ones(1, device='cuda')
-        output = eval_get3d_single(g_ema, latents_edited, torch.zeros([1, 512], device='cuda'), grid_c)
+    batch_size = 5
 
-        cur_output = output.detach()
+    lmbda = 0.0015
 
-        # Get CLIP Loss
-        loss = loss_fn(output[0])
-        
-        # Backpropagation
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-        print(loss)
-    with open('output.pickle', 'wb') as f:
-        pickle.dump(cur_output.cpu(), f)
+    for i in range(n_epochs):
+        for j, g_z in enumerate(data_geo_z):
+            grid_z = g_z.detach()
+            grid_tex_z = data_tex_z[j].detach()
+            g_ema = copy.deepcopy(G).eval()
+
+            # Transform latents with model
+            grid_z.requires_grad = True
+            latents_edited = model(grid_z).reshape(1, 512)
+
+            # Get output of GET3D on latents
+            grid_c = torch.ones(1, device='cuda')
+            output = eval_get3d_single(g_ema, latents_edited, grid_tex_z, grid_c)
+
+            cur_output = output.detach()
+
+            # Get CLIP Loss
+            loss = loss_fn(output[0]) + lmbda * ((latents_edited - grid_z) ** 2).sum()
+
+            print(loss)
+            
+            # Backpropagation
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            if i == n_epochs - 1:
+                latent_codes.append((grid_z.detach(), latents_edited.detach()))
+    
+    latent_codes_output = []
+    g_ema = copy.deepcopy(G).eval()
+    for i, (original, edited) in enumerate(latent_codes):
+        with torch.no_grad():
+            img_original = eval_get3d_single(g_ema, original, data_tex_z[i], grid_c)
+            img_edited = eval_get3d_single(g_ema, edited, data_tex_z[i], grid_c)
+            latent_codes_output.append((img_original.cpu(), img_edited.cpu()))
+    
+    with open('output_codes.pickle', 'wb') as f:
+        pickle.dump([(x.cpu(), y.cpu()) for x, y in latent_codes], f)
+    
+    with open('output_img.pickle', 'wb') as f:
+        pickle.dump(latent_codes_output, f)
     
 
 
@@ -193,10 +220,10 @@ with open('test.pickle', 'rb') as f:
 
 G_ema = constructGenerator(**c)
 
-n_shape = 50
+n_shape = 5
 
 grid_c = torch.ones(n_shape, device=device)
-grid_z = torch.zeros([n_shape, 1, 512], device=device)  # random code for geometry
+grid_z = torch.randn([n_shape, 1, 512], device=device)  # random code for geometry
 grid_tex_z = torch.randn([n_shape, 1, 512], device=device)  # random code for texture
 
 # x = eval_get3d_tensor(G_ema, grid_z, grid_tex_z, grid_c)
@@ -211,7 +238,7 @@ print(model)
 
 optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
 
-train(G_ema, model, grid_z, optimizer)
+train(G_ema, model, grid_z, grid_tex_z, optimizer)
 
 
 

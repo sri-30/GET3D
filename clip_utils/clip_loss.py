@@ -15,8 +15,8 @@ class CLIPLoss(torch.nn.Module):
     def transform(self, array):
         lo, hi = -1, 1
         img = array
-        img = (img - lo) * (255 / (hi - lo))
-        img.clip(0, 255)
+        img = (img - lo) * (1 / (hi - lo))
+        img.clip(0, 1)
         transform_clip = Compose([
             Resize(self.model.visual.input_resolution, interpolation=InterpolationMode.BICUBIC),
             CenterCrop(self.model.visual.input_resolution),

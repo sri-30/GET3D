@@ -494,7 +494,8 @@ class DMTETSynthesisNetwork(torch.nn.Module):
             mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = self.get_geometry_prediction(ws_geo, sdf_feature)
         else:
             mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = self.get_geometry_prediction(ws_geo)
-
+        print(ws_tex.shape)
+        print(ws_geo.shape)
         # Generate random camera
         with torch.no_grad():
             if camera is None:
@@ -700,6 +701,29 @@ class GeneratorDMTETMesh(torch.nn.Module):
         all_mesh = self.synthesis.extract_3d_shape(ws, ws_geo, )
 
         return all_mesh
+
+    def get_intermediates(self, geo_z, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, camera=None,
+        generate_no_light=False,
+        **synthesis_kwargs):
+        ws = self.mapping(
+        z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+        ws_geo = self.mapping_geo(
+        geo_z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff,
+        update_emas=update_emas)
+        return (ws_geo, ws)
+    
+    def generate_3d_intermediate(
+            self, ws, ws_geo, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, camera=None,
+            generate_no_light=False,
+            **synthesis_kwargs):
+        img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, mask_pyramid, tex_hard_mask, \
+    sdf_reg_loss, render_return_value = self.synthesis.generate(
+        ws, camera=camera,
+        ws_geo=ws_geo,
+        **synthesis_kwargs)
+        if generate_no_light:
+            return img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask
+        return img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, tex_hard_mask
 
     def generate_3d(
             self, z, geo_z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, camera=None,

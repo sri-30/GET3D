@@ -99,7 +99,7 @@ if __name__ == "__main__":
     z = torch.randn([1, 512], device='cuda')  # random code for geometry
     tex_z = torch.randn([1, 512], device='cuda')  # random code for texture
 
-    original, edited, loss = train_eval(G_ema, z, tex_z, 'Sports Car', 100)
+    original, edited, loss = train_eval(G_ema, z, tex_z, 'Ferrari', 100)
 
     print(loss)
 

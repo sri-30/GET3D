@@ -108,3 +108,7 @@ def eval_get3d_single(G_ema, geo_z, tex_z, grid_c):
         generate_no_light=True, truncation_psi=0.7, camera=camera)
     rgb_img = img[:, :3]
     return rgb_img
+
+def intermediates(G_ema, geo_z, tex_z, grid_c):
+    G_ema.update_w_avg()
+    return G_ema.get_intermediates(geo_z, tex_z, grid_c)

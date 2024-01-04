@@ -494,8 +494,6 @@ class DMTETSynthesisNetwork(torch.nn.Module):
             mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = self.get_geometry_prediction(ws_geo, sdf_feature)
         else:
             mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = self.get_geometry_prediction(ws_geo)
-        print(ws_tex.shape)
-        print(ws_geo.shape)
         # Generate random camera
         with torch.no_grad():
             if camera is None:

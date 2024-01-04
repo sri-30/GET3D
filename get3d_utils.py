@@ -109,6 +109,15 @@ def eval_get3d_single(G_ema, geo_z, tex_z, grid_c):
     rgb_img = img[:, :3]
     return rgb_img
 
+def eval_get3d_single_intermediates(G_ema, ws_geo, ws_tex, grid_c):
+    camera_list = G_ema.synthesis.generate_rotate_camera_list()
+    camera = camera_list[4]
+    img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d_intermediate(
+        ws_geo=ws_geo, ws=ws_tex, c=grid_c, noise_mode='const',
+        generate_no_light=True, truncation_psi=0.7, camera=camera)
+    rgb_img = img[:, :3]
+    return rgb_img
+
 def intermediates(G_ema, geo_z, tex_z, grid_c):
     G_ema.update_w_avg()
     return G_ema.get_intermediates(geo_z, tex_z, grid_c)

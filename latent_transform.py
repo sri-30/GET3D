@@ -12,7 +12,9 @@ class TransformIntermediateLatent(torch.nn.Module):
         self.n = n
         self.flatten = torch.nn.Flatten()
         self.linear_relu_stack = torch.nn.Sequential(
-            self.init_linear(512 * n)
+            torch.nn.Linear(512*n, 512*n),
+            torch.nn.ReLU(),
+            torch.nn.Linear(512*n, 512*n),
         )
     
     def init_linear(self, n):
@@ -58,6 +60,9 @@ def train_eval(G, data_geo_ws, data_tex_ws, text_prompt, n_epochs=5, lmbda_1=0.0
     edited_latents = []
     res_loss = []
 
+    min_latent = None
+    min_loss = float('inf')
+
     for i in range(n_epochs):
         print(i)
 
@@ -82,6 +87,10 @@ def train_eval(G, data_geo_ws, data_tex_ws, text_prompt, n_epochs=5, lmbda_1=0.0
         # Backpropagation
         loss.backward()
 
+        if loss[0].item() < min_loss:
+            min_loss = loss[0].item()
+            min_latent = (geo_ws_edited.detach().cpu(), tex_ws_edited.detach().cpu())
+
         res_loss.append(loss[0].item())
 
         optimizer_geo.step()
@@ -92,7 +101,7 @@ def train_eval(G, data_geo_ws, data_tex_ws, text_prompt, n_epochs=5, lmbda_1=0.0
 
         edited_latents.append((geo_ws_edited.detach().cpu(), tex_ws_edited.detach().cpu()))
     
-    return original_latents, edited_latents, res_loss
+    return original_latents, edited_latents, res_loss, min_latent
 
 if __name__ == "__main__":
     n_geo = 22
@@ -104,7 +113,7 @@ if __name__ == "__main__":
 
     G = constructGenerator(**c)
 
-    torch.manual_seed(58)
+    torch.manual_seed(53)
 
     with open('intermediates.pickle', 'rb') as f:
         intermediates_cpu = pickle.load(f)
@@ -112,7 +121,7 @@ if __name__ == "__main__":
     data_ws_geo = intermediates_cpu[0][0].to('cuda')  # random code for geometry
     data_ws_tex = intermediates_cpu[0][1].to('cuda')  # random code for texture
 
-    original, edited, loss = train_eval(G, data_ws_geo, data_ws_tex, 'Sports Car', 500)
+    original, edited, loss, min_latent = train_eval(G, data_ws_geo, data_ws_tex, 'Sports Car', 1000)
 
     print(loss)
 
@@ -121,7 +130,7 @@ if __name__ == "__main__":
     with torch.no_grad():
         G.eval()
         img_original = eval_get3d_single_intermediates(G, original[0].to('cuda'), original[1].to('cuda'), torch.ones(1, device='cuda'))
-        img_edited = eval_get3d_single_intermediates(G, edited[-1][0].to('cuda'), edited[-1][1].to('cuda'), torch.ones(1, device='cuda'))
+        img_edited = eval_get3d_single_intermediates(G, min_latent[0].to('cuda'), min_latent[1].to('cuda'), torch.ones(1, device='cuda'))
         result.append((img_original.cpu(), img_edited.cpu()))
     with open('output_img_intermediate.pickle', 'wb') as f:
         pickle.dump(result, f)

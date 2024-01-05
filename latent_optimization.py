@@ -49,6 +49,9 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
     edited_latents = []
     res_loss = []
 
+    min_latent = None
+    min_loss = float('inf')
+
     for i in range(n_epochs):
         print(i)
         geo_z = data_geo_z.detach()
@@ -75,6 +78,10 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         # Backpropagation
         loss.backward()
 
+        if loss[0].item() < min_loss:
+            min_loss = loss[0].item()
+            min_latent = (geo_z_edited.detach().cpu(), tex_z_edited.detach().cpu())
+
         res_loss.append(loss[0].item())
 
         optimizer_geo.step()
@@ -85,7 +92,7 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
 
         edited_latents.append((geo_z_edited.detach().cpu(), tex_z_edited.detach().cpu()))
     
-    return original_latents, edited_latents, res_loss
+    return original_latents, edited_latents, res_loss, min_latent
 
 if __name__ == "__main__":
     c = None
@@ -94,21 +101,22 @@ if __name__ == "__main__":
 
     G_ema = constructGenerator(**c)
 
-    torch.manual_seed(70)
+    torch.manual_seed(61)
 
     z = torch.randn([1, 512], device='cuda')  # random code for geometry
     tex_z = torch.randn([1, 512], device='cuda')  # random code for texture
 
-    original, edited, loss = train_eval(G_ema, z, tex_z, 'Sports Car', 50)
+    original, edited, loss, min_latent = train_eval(G_ema, z, tex_z, 'Sports Car', 100)
 
     print(loss)
+    print(min(loss))
 
     result = []
 
     with torch.no_grad():
         G_ema.eval()
         img_original = eval_get3d_single(G_ema, original[0].to('cuda'), original[1].to('cuda'), torch.ones(1, device='cuda'))
-        img_edited = eval_get3d_single(G_ema, edited[-1][0].to('cuda'), edited[-1][1].to('cuda'), torch.ones(1, device='cuda'))
+        img_edited = eval_get3d_single(G_ema, min_latent[0].to('cuda'), min_latent[1].to('cuda'), torch.ones(1, device='cuda'))
         result.append((img_original.cpu(), img_edited.cpu()))
     with open('output_img.pickle', 'wb') as f:
         pickle.dump(result, f)

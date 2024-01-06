@@ -11,7 +11,9 @@ class TransformLatent(torch.nn.Module):
         super().__init__()
         self.flatten = torch.nn.Flatten()
         self.linear_relu_stack = torch.nn.Sequential(
-            torch.nn.Linear(512, 512),
+            torch.nn.Linear(512, 1024),
+            torch.nn.ReLU(),
+            torch.nn.Linear(1024, 512),
             torch.nn.ReLU(),
             torch.nn.Linear(512, 512),
         )
@@ -30,7 +32,7 @@ def preprocess_rgb(array):
     img.clip(0, 255)
     return img
 
-def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015):
+def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.0005, lmbda_2=0.001):
     model_geo = TransformLatent().to('cuda')
     model_tex = TransformLatent().to('cuda')
 
@@ -73,7 +75,7 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         cur_output = output.detach()
 
         # Get CLIP Loss
-        loss = loss_fn(output[0]) # + lmbda_1 * ((geo_z_edited - geo_z) ** 2).sum() + lmbda_2 * ((tex_z_edited - tex_z) ** 2).sum()
+        loss = loss_fn(output[0]) + lmbda_1 * ((geo_z_edited - geo_z) ** 2).sum() + lmbda_2 * ((tex_z_edited - tex_z) ** 2).sum()
         
         # Backpropagation
         loss.backward()
@@ -106,7 +108,7 @@ if __name__ == "__main__":
     z = torch.randn([1, 512], device='cuda')  # random code for geometry
     tex_z = torch.randn([1, 512], device='cuda')  # random code for texture
 
-    original, edited, loss, min_latent = train_eval(G_ema, z, tex_z, 'Sports Car', 100)
+    original, edited, loss, min_latent = train_eval(G_ema, z, tex_z, 'Sports Car', 1000)
 
     print(loss)
     print(min(loss))

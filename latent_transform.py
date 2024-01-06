@@ -12,17 +12,12 @@ class TransformIntermediateLatent(torch.nn.Module):
         self.n = n
         self.flatten = torch.nn.Flatten()
         self.linear_relu_stack = torch.nn.Sequential(
-            torch.nn.Linear(512*n, 512*n),
+            torch.nn.Linear(512*n, 1024*n),
+            torch.nn.ReLU(),
+            torch.nn.Linear(1024*n, 512*n),
             torch.nn.ReLU(),
             torch.nn.Linear(512*n, 512*n),
         )
-    
-    def init_linear(self, n):
-        with torch.no_grad():
-            layer = torch.nn.Linear(n, n)
-            torch.nn.init.ones_(layer.weight)
-            torch.nn.init.zeros_(layer.bias)
-        return layer
 
     def forward(self, x):
         x_flat = self.flatten(x)
@@ -83,7 +78,7 @@ def train_eval(G, data_geo_ws, data_tex_ws, text_prompt, n_epochs=5, lmbda_1=0.0
         output = eval_get3d_single_intermediates(g_ema, geo_ws_edited, tex_ws_edited, torch.ones(1, device='cuda'))
 
         # Get CLIP Loss
-        loss = loss_fn(output[0]) # + lmbda_1 * ((geo_z_edited - geo_z) ** 2).sum() + lmbda_2 * ((tex_z_edited - tex_z) ** 2).sum()
+        loss = loss_fn(output[0]) + lmbda_1 * ((geo_ws_edited - geo_ws) ** 2).sum() + lmbda_2 * ((tex_ws_edited - tex_ws) ** 2).sum()
         # Backpropagation
         loss.backward()
 
@@ -118,10 +113,10 @@ if __name__ == "__main__":
     with open('intermediates.pickle', 'rb') as f:
         intermediates_cpu = pickle.load(f)
 
-    data_ws_geo = intermediates_cpu[0][0].to('cuda')  # random code for geometry
-    data_ws_tex = intermediates_cpu[0][1].to('cuda')  # random code for texture
+    data_ws_geo = intermediates_cpu[4][0].to('cuda')  # random code for geometry
+    data_ws_tex = intermediates_cpu[4][1].to('cuda')  # random code for texture
 
-    original, edited, loss, min_latent = train_eval(G, data_ws_geo, data_ws_tex, 'Sports Car', 1000)
+    original, edited, loss, min_latent = train_eval(G, data_ws_geo, data_ws_tex, 'Sports Car', 3000, lmbda_1=0.0005, lmbda_2=0.0005)
 
     print(loss)
 

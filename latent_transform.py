@@ -33,7 +33,7 @@ def preprocess_rgb(array):
     img.clip(0, 255)
     return img
 
-def train_eval(G, data_geo_ws, data_tex_ws, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015):
+def train_eval(G, data_geo_ws, data_tex_ws, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, edit_geo=True, edit_tex=True):
     n_geo = 22
     n_tex = 9
 
@@ -64,21 +64,38 @@ def train_eval(G, data_geo_ws, data_tex_ws, text_prompt, n_epochs=5, lmbda_1=0.0
         geo_ws = data_geo_ws.to('cuda').detach()
         tex_ws = data_tex_ws.to('cuda').detach()
 
+        g_ema = copy.deepcopy(G).eval()
+        # Transform latents with model
         geo_ws.requires_grad = True
         tex_ws.requires_grad = True
 
-        g_ema = copy.deepcopy(G).eval()
-
-        # # Transform latents with model
-        geo_ws_edited = model_geo(geo_ws)
-        tex_ws_edited = model_tex(tex_ws)
+        if edit_geo:
+            geo_ws_edited = model_geo(geo_ws)
+        else:
+            geo_ws_edited = geo_ws
+        if edit_tex:
+            tex_ws_edited = model_tex(tex_ws)
+        else:
+            tex_ws_edited = tex_ws
 
         # Get output of GET3D on latents
-        #output = eval_get3d_single(g_ema, torch.randn([1, 512], device='cuda'), torch.randn([1, 512], device='cuda'), torch.ones(1, device='cuda'))
+        
         output = eval_get3d_single_intermediates(g_ema, geo_ws_edited, tex_ws_edited, torch.ones(1, device='cuda'))
 
         # Get CLIP Loss
-        loss = loss_fn(output[0]) + lmbda_1 * ((geo_ws_edited - geo_ws) ** 2).sum() + lmbda_2 * ((tex_ws_edited - tex_ws) ** 2).sum()
+        loss_clip = loss_fn(output[0]) + lmbda_1 * ((geo_ws_edited - geo_ws) ** 2).sum() + lmbda_2 * ((tex_ws_edited - tex_ws) ** 2).sum()
+
+        # Control similarity to original latents
+        loss_geo = 0
+        loss_tex = 0
+
+        if edit_geo:
+            loss_geo = lmbda_1 * ((geo_ws_edited - geo_ws) ** 2).sum()
+        if edit_tex:
+            loss_tex = lmbda_2 * ((tex_ws_edited - tex_ws) ** 2).sum()
+
+        loss = loss_clip + loss_geo + loss_tex
+
         # Backpropagation
         loss.backward()
 
@@ -108,15 +125,15 @@ if __name__ == "__main__":
 
     G = constructGenerator(**c)
 
-    torch.manual_seed(53)
+    torch.manual_seed(32)
 
     with open('intermediates.pickle', 'rb') as f:
         intermediates_cpu = pickle.load(f)
 
-    data_ws_geo = intermediates_cpu[4][0].to('cuda')  # random code for geometry
-    data_ws_tex = intermediates_cpu[4][1].to('cuda')  # random code for texture
+    data_ws_geo = intermediates_cpu[17][0].to('cuda')  # random code for geometry
+    data_ws_tex = intermediates_cpu[17][1].to('cuda')  # random code for texture
 
-    original, edited, loss, min_latent = train_eval(G, data_ws_geo, data_ws_tex, 'Sports Car', 3000, lmbda_1=0.0005, lmbda_2=0.0005)
+    original, edited, loss, min_latent = train_eval(G, data_ws_geo, data_ws_tex, 'Sports Car', 4000, lmbda_1=0.0001, lmbda_2=0.0005, edit_tex=False)
 
     print(loss)
 

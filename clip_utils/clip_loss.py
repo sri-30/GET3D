@@ -4,12 +4,17 @@ import clip
 
 class CLIPLoss(torch.nn.Module):
 
-    def __init__(self, text_prompt: str):
+    def __init__(self, text_prompt: str, target_type='text', clip_pae_args=None):
         super(CLIPLoss, self).__init__()
         self.model, self.preprocess = clip.load("ViT-B/32", device="cuda")
+        self.target_type = target_type
         self.text_prompt = text_prompt
         self.text_encoded = clip.tokenize(text_prompt).to('cuda')
         self.text_encoded.requires_grad = False
+        if self.target_type == target_type:
+            self.target = self.text_encoded
+        else:
+            self.target = None
         
     
     def transform(self, array):
@@ -25,6 +30,7 @@ class CLIPLoss(torch.nn.Module):
         return transform_clip(img)
 
     def forward(self, image):
-        image_processed = self.transform(image).unsqueeze(0)
-        similarity = 1 - self.model(image_processed, self.text_encoded)[0] / 100
-        return similarity
+        if self.target_type == 'text':
+            image_processed = self.transform(image).unsqueeze(0)
+            similarity = 1 - self.model(image_processed, self.target)[0] / 100
+            return similarity

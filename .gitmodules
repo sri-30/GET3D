@@ -1,0 +1,3 @@
+[submodule "submodules/CLIP-PAE"]
+	path = submodules/CLIP-PAE
+	url = git@github.com:sri-30/CLIP-PAE.git

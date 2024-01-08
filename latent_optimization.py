@@ -51,8 +51,13 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
 
     learning_rate_tex = 0.1
     optimizer_tex = torch.optim.Adam([tex_z], lr=learning_rate_tex)
+
+    with torch.no_grad():
+        g_ema = copy.deepcopy(G).eval()
+        c = torch.ones(1, device='cuda')
+        img_original = eval_get3d_single(g_ema, geo_z, tex_z, c)
     
-    clip_loss = CLIPLoss(text_prompt)
+    clip_loss = CLIPLoss(text_prompt, target_type='PAE', clip_pae_args={'original_image': img_original})
 
     original_latents = (data_geo_z.detach().cpu(), data_tex_z.detach().cpu())
     edited_latents = []
@@ -124,7 +129,7 @@ if __name__ == "__main__":
     z = torch.randn([1, 512], device='cuda')  # random code for geometry
     tex_z = torch.randn([1, 512], device='cuda')  # random code for texture
 
-    original, edited, loss, min_latent = train_eval(G_ema, z, tex_z, 'Ferrari', n_epochs=500, lmbda_1=0.0005, lmbda_2=0.0005)
+    original, edited, loss, min_latent = train_eval(G_ema, z, tex_z, 'Sports Car', n_epochs=1, lmbda_1=0.0005, lmbda_2=0.0005)
 
     print(loss)
     print(min(loss))

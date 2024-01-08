@@ -4,25 +4,24 @@ import copy
 import pickle
 
 from clip_utils.clip_loss import CLIPLoss
-from get3d_utils import constructGenerator, eval_get3d_single, intermediates, eval_get3d_single_intermediates
+from get3d_utils import constructGenerator, eval_get3d_single
 
-class TransformIntermediateLatent(torch.nn.Module):
-    def __init__(self, n):
+class TransformLatent(torch.nn.Module):
+    def __init__(self):
         super().__init__()
-        self.n = n
         self.flatten = torch.nn.Flatten()
         self.linear_relu_stack = torch.nn.Sequential(
-            torch.nn.Linear(512*n, 1024*n),
+            torch.nn.Linear(512, 1024),
             torch.nn.ReLU(),
-            torch.nn.Linear(1024*n, 512*n),
+            torch.nn.Linear(1024, 512),
             torch.nn.ReLU(),
-            torch.nn.Linear(512*n, 512*n),
+            torch.nn.Linear(512, 512),
         )
-
+    
     def forward(self, x):
-        x_flat = self.flatten(x)
-        logits = self.linear_relu_stack(x_flat)
-        return logits.reshape(x.shape)
+        x = self.flatten(x)
+        logits = self.linear_relu_stack(x)
+        return logits
 
 def preprocess_rgb(array):
     lo, hi = -1, 1
@@ -33,12 +32,9 @@ def preprocess_rgb(array):
     img.clip(0, 255)
     return img
 
-def train_eval(G, data_geo_ws, data_tex_ws, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, edit_geo=True, edit_tex=True):
-    n_geo = 22
-    n_tex = 9
-
-    model_geo = TransformIntermediateLatent(n_geo).to('cuda')
-    model_tex = TransformIntermediateLatent(n_tex).to('cuda')
+def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, edit_geo=True, edit_tex=True):
+    model_geo = TransformLatent().to('cuda')
+    model_tex = TransformLatent().to('cuda')
 
     model_geo.train()
     model_tex.train()
@@ -49,9 +45,9 @@ def train_eval(G, data_geo_ws, data_tex_ws, text_prompt, n_epochs=5, lmbda_1=0.0
     learning_rate_tex = 1e-3
     optimizer_tex = torch.optim.SGD(model_tex.parameters(), lr=learning_rate_tex)
     
-    loss_fn = CLIPLoss(text_prompt)
+    clip_loss = CLIPLoss(text_prompt)
 
-    original_latents = (data_geo_ws.detach().cpu(), data_tex_ws.detach().cpu())
+    original_latents = (data_geo_z.detach().cpu(), data_tex_z.detach().cpu())
     edited_latents = []
     res_loss = []
 
@@ -60,48 +56,50 @@ def train_eval(G, data_geo_ws, data_tex_ws, text_prompt, n_epochs=5, lmbda_1=0.0
 
     for i in range(n_epochs):
         print(i)
-
-        geo_ws = data_geo_ws.to('cuda').detach()
-        tex_ws = data_tex_ws.to('cuda').detach()
+        geo_z = data_geo_z.detach()
+        tex_z = data_tex_z.detach()
 
         g_ema = copy.deepcopy(G).eval()
-        # Transform latents with model
-        geo_ws.requires_grad = True
-        tex_ws.requires_grad = True
 
+        # Transform latents with model
+        geo_z.requires_grad = True
+        tex_z.requires_grad = True
+        
         if edit_geo:
-            geo_ws_edited = model_geo(geo_ws)
+            geo_z_edited = model_geo(geo_z).reshape(1, 512)
         else:
-            geo_ws_edited = geo_ws
+            geo_z_edited = geo_z
         if edit_tex:
-            tex_ws_edited = model_tex(tex_ws)
+            tex_z_edited = model_tex(tex_z).reshape(1, 512)
         else:
-            tex_ws_edited = tex_ws
+            tex_z_edited = tex_z
 
         # Get output of GET3D on latents
-        
-        output = eval_get3d_single_intermediates(g_ema, geo_ws_edited, tex_ws_edited, torch.ones(1, device='cuda'))
+        c = torch.ones(1, device='cuda')
+        output = eval_get3d_single(g_ema, geo_z_edited, tex_z_edited, c)
+
+        cur_output = output.detach()
 
         # Get CLIP Loss
-        loss_clip = loss_fn(output[0]) + lmbda_1 * ((geo_ws_edited - geo_ws) ** 2).sum() + lmbda_2 * ((tex_ws_edited - tex_ws) ** 2).sum()
+        loss_clip = clip_loss(output[0])
 
         # Control similarity to original latents
         loss_geo = 0
         loss_tex = 0
 
         if edit_geo:
-            loss_geo = lmbda_1 * ((geo_ws_edited - geo_ws) ** 2).sum()
+            loss_geo = lmbda_1 * ((geo_z_edited - geo_z) ** 2).sum()
         if edit_tex:
-            loss_tex = lmbda_2 * ((tex_ws_edited - tex_ws) ** 2).sum()
+            loss_tex = lmbda_2 * ((tex_z_edited - tex_z) ** 2).sum()
 
         loss = loss_clip + loss_geo + loss_tex
-
+        
         # Backpropagation
         loss.backward()
 
         if loss[0].item() < min_loss:
             min_loss = loss[0].item()
-            min_latent = (geo_ws_edited.detach().cpu(), tex_ws_edited.detach().cpu())
+            min_latent = (geo_z_edited.detach().cpu(), tex_z_edited.detach().cpu())
 
         res_loss.append(loss[0].item())
 
@@ -111,39 +109,34 @@ def train_eval(G, data_geo_ws, data_tex_ws, text_prompt, n_epochs=5, lmbda_1=0.0
         optimizer_tex.step()
         optimizer_tex.zero_grad()
 
-        edited_latents.append((geo_ws_edited.detach().cpu(), tex_ws_edited.detach().cpu()))
+        edited_latents.append((geo_z_edited.detach().cpu(), tex_z_edited.detach().cpu()))
     
     return original_latents, edited_latents, res_loss, min_latent
 
 if __name__ == "__main__":
-    n_geo = 22
-    n_tex = 9
-
     c = None
     with open('test.pickle', 'rb') as f:
         c = pickle.load(f)
 
-    G = constructGenerator(**c)
+    G_ema = constructGenerator(**c)
 
-    torch.manual_seed(32)
+    torch.manual_seed(3)
 
-    with open('intermediates.pickle', 'rb') as f:
-        intermediates_cpu = pickle.load(f)
+    z = torch.randn([1, 512], device='cuda')  # random code for geometry
+    tex_z = torch.randn([1, 512], device='cuda')  # random code for texture
 
-    data_ws_geo = intermediates_cpu[17][0].to('cuda')  # random code for geometry
-    data_ws_tex = intermediates_cpu[17][1].to('cuda')  # random code for texture
-
-    original, edited, loss, min_latent = train_eval(G, data_ws_geo, data_ws_tex, 'Sports Car', 4000, lmbda_1=0.0001, lmbda_2=0.0005, edit_tex=False)
+    original, edited, loss, min_latent = train_eval(G_ema, z, tex_z, 'Sports Car', n_epochs=5, lmbda_1=0.0005, lmbda_2=0.1, edit_geo=False)
 
     print(loss)
+    print(min(loss))
 
     result = []
 
     with torch.no_grad():
-        G.eval()
-        img_original = eval_get3d_single_intermediates(G, original[0].to('cuda'), original[1].to('cuda'), torch.ones(1, device='cuda'))
-        img_edited = eval_get3d_single_intermediates(G, min_latent[0].to('cuda'), min_latent[1].to('cuda'), torch.ones(1, device='cuda'))
+        G_ema.eval()
+        img_original = eval_get3d_single(G_ema, original[0].to('cuda'), original[1].to('cuda'), torch.ones(1, device='cuda'))
+        img_edited = eval_get3d_single(G_ema, min_latent[0].to('cuda'), min_latent[1].to('cuda'), torch.ones(1, device='cuda'))
         result.append((img_original.cpu(), img_edited.cpu()))
-    with open('output_img_intermediate.pickle', 'wb') as f:
+    with open('output_img.pickle', 'wb') as f:
         pickle.dump(result, f)
     

@@ -94,8 +94,8 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         # Backpropagation
         loss.backward()
 
-        if loss[0].item() < min_loss:
-            min_loss = loss[0].item()
+        if loss.item() < min_loss:
+            min_loss = loss.item()
             min_latent = (geo_z.detach().cpu(), tex_z.detach().cpu())
 
         res_loss.append(loss[0].item())

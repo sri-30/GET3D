@@ -1,8 +1,8 @@
 import torch
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, InterpolationMode
 import clip
-from submodules.CLIP_PAE.get3d_utils import get_pae
 from torch.nn.functional import normalize
+from submodules.CLIP_PAE.get3d_utils import get_pae
 
 class CLIPLoss(torch.nn.Module):
 
@@ -13,7 +13,6 @@ class CLIPLoss(torch.nn.Module):
         self.text_prompt = text_prompt
         self.text_tokenized = clip.tokenize(text_prompt).to('cuda')
         self.text_encoded = self.model.encode_text(torch.cat([clip.tokenize(text_prompt)]).cuda())
-        self.cos_criterion = torch.nn.CosineSimilarity()
         if self.target_type == 'text':
             self.target = self.text_tokenized
         else:
@@ -38,12 +37,14 @@ class CLIPLoss(torch.nn.Module):
     def forward(self, image):
         if self.target_type == 'text':
             image_processed = self.transform(image).unsqueeze(0)
-            similarity = 1 - self.model(image_processed, self.target)[0] / 100
+            similarity = 1 - self.model(image_processed, self.text_tokenized)[0] / 100
             return similarity
         else:
             image_processed = self.transform(image).unsqueeze(0)
             image_features = self.model.encode_image(image_processed)
 
-            c_loss = (-1 * self.cos_criterion(image_features @ self.basis, self.target)).mean()
+            # c_loss = (-1 * self.cos_criterion(image_features @ self.basis, self.target)).mean()
+            print(torch.matmul(image_features, self.basis))
+            c_loss = torch.matmul(image_features, self.basis).sum()
             print(c_loss)
             return c_loss

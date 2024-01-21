@@ -57,7 +57,8 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         c = torch.ones(1, device='cuda')
         img_original = eval_get3d_single(g_ema, geo_z, tex_z, c)
     
-    clip_loss = CLIPLoss(text_prompt, target_type='PAE', clip_pae_args={'original_image': img_original})
+    # clip_loss = CLIPLoss(text_prompt, target_type='PAE', clip_pae_args={'original_image': img_original})
+    clip_loss = CLIPLoss(text_prompt)
 
     original_latents = (data_geo_z.detach().cpu(), data_tex_z.detach().cpu())
     edited_latents = []
@@ -94,11 +95,11 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         # Backpropagation
         loss.backward()
 
-        if loss.item() < min_loss:
-            min_loss = loss.item()
+        if abs(loss.item()) < min_loss:
+            min_loss = abs(loss.item())
             min_latent = (geo_z.detach().cpu(), tex_z.detach().cpu())
 
-        res_loss.append(loss[0].item())
+        res_loss.append(loss.item())
 
         t = i / n_epochs
         lr = get_lr(t, 0.1)
@@ -124,15 +125,15 @@ if __name__ == "__main__":
 
     G_ema = constructGenerator(**c)
 
-    torch.manual_seed(3)
+    torch.manual_seed(4)
 
     z = torch.randn([1, 512], device='cuda')  # random code for geometry
     tex_z = torch.randn([1, 512], device='cuda')  # random code for texture
 
-    original, edited, loss, min_latent = train_eval(G_ema, z, tex_z, 'Sports Car', n_epochs=1, lmbda_1=0.0005, lmbda_2=0.0005)
+    original, edited, loss, min_latent = train_eval(G_ema, z, tex_z, 'Sports Car', n_epochs=100, lmbda_1=0.01, lmbda_2=0.001)
 
     print(loss)
-    print(min(loss))
+    print(min([abs(l) for l in loss]))
 
     result = []
 

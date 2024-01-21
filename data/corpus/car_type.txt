@@ -2,19 +2,11 @@ Sedan
 Coupe
 Convertible
 SUV (Sports Utility Vehicle)
-Crossover
 Minivan
-Pickup Truck
 Hatchback
 Sports Car
-Electric Car
-Hybrid Car
 Luxury Car
 Compact Car
 Off-road
-Vintage
-Hot Hatch
-Limousine
+Vintage Car
 Supercar
-Roadster
-Microcar

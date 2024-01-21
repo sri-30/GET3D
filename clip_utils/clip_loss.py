@@ -13,6 +13,7 @@ class CLIPLoss(torch.nn.Module):
         self.text_prompt = text_prompt
         self.text_tokenized = clip.tokenize(text_prompt).to('cuda')
         self.text_encoded = self.model.encode_text(torch.cat([clip.tokenize(text_prompt)]).cuda())
+        self.cos_sim = torch.nn.CosineSimilarity()
         if self.target_type == 'text':
             self.target = self.text_tokenized
         else:
@@ -44,7 +45,6 @@ class CLIPLoss(torch.nn.Module):
             image_features = self.model.encode_image(image_processed)
 
             # c_loss = (-1 * self.cos_criterion(image_features @ self.basis, self.target)).mean()
-            print(torch.matmul(image_features, self.basis))
-            c_loss = torch.matmul(image_features, self.basis).sum()
-            print(c_loss)
+
+            c_loss = (-1 * self.cos_sim(image_features @ self.basis, self.target)).mean()
             return c_loss

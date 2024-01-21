@@ -2,3 +2,4 @@
 pretrained_model
 **/__pycache__/
 save_inference_results
+latent_transform_adam_results

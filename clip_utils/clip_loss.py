@@ -6,9 +6,13 @@ from submodules.CLIP_PAE.get3d_utils import get_pae
 
 class CLIPLoss(torch.nn.Module):
 
+    model_global = None
+
     def __init__(self, text_prompt: str, target_type='text', clip_pae_args=None):
         super(CLIPLoss, self).__init__()
-        self.model = clip.load("ViT-B/32", device="cpu")[0].to('cuda')
+        if CLIPLoss.model_global is None:
+            CLIPLoss.model_global = clip.load("ViT-B/32", device="cpu")[0].to('cuda')
+        self.model = CLIPLoss.model_global
         self.target_type = target_type
         self.text_prompt = text_prompt
         self.text_tokenized = clip.tokenize(text_prompt).to('cuda')
@@ -21,7 +25,7 @@ class CLIPLoss(torch.nn.Module):
             text_features = normalize(self.text_encoded)
             self.image_transformed = self.transform(clip_pae_args['original_image'])
             image_features = self.model.encode_image(self.image_transformed)
-            self.target, self.basis = get_pae(self.model, n_components=10, image_features=image_features, text_features=text_features)
+            self.target, self.basis = get_pae(self.model, components=10, image_features=image_features, text_features=text_features, power=clip_pae_args['power'], clip_target=clip_pae_args['clip_target'])
     
     def transform(self, array):
         lo, hi = -1, 1
@@ -35,6 +39,21 @@ class CLIPLoss(torch.nn.Module):
         ])
         return transform_clip(img)
 
+    def get_embedding_image(self, image):
+        if self.target_type == 'text':
+            image_processed = self.transform(image).unsqueeze(0)
+            return self.model.encode_image(image_processed)
+        else:
+            image_processed = self.transform(image).unsqueeze(0)
+            image_features = self.model.encode_image(image_processed)
+            return image_features @ self.basis
+    
+    def get_embedding_target(self, image):
+        if self.target_type == 'text':
+            return self.text_encoded
+        return self.target
+            
+
     def forward(self, image):
         if self.target_type == 'text':
             image_processed = self.transform(image).unsqueeze(0)
@@ -46,5 +65,5 @@ class CLIPLoss(torch.nn.Module):
 
             # c_loss = (-1 * self.cos_criterion(image_features @ self.basis, self.target)).mean()
 
-            c_loss = (-1 * self.cos_sim(image_features @ self.basis, self.target)).mean()
+            c_loss = -1 * (self.cos_sim(image_features @ self.basis, self.target)).mean()
             return c_loss

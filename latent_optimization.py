@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import copy
 import pickle
+import time
 
 from clip_utils.clip_loss import CLIPLoss
 from training_utils.training_utils import get_lr
@@ -46,10 +47,10 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
     geo_z.requires_grad = True
     tex_z.requires_grad = True
 
-    learning_rate_geo = 0.1
+    learning_rate_geo = 1e-1
     optimizer_geo = torch.optim.Adam([geo_z], lr=learning_rate_geo)
 
-    learning_rate_tex = 0.1
+    learning_rate_tex = 1e-1
     optimizer_tex = torch.optim.Adam([tex_z], lr=learning_rate_tex)
 
     with torch.no_grad():
@@ -57,15 +58,19 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         c = torch.ones(1, device='cuda')
         img_original = eval_get3d_single(g_ema, geo_z, tex_z, c)
     
-    # clip_loss = CLIPLoss(text_prompt, target_type='PAE', clip_pae_args={'original_image': img_original})
-    clip_loss = CLIPLoss(text_prompt)
+    clip_loss = CLIPLoss(text_prompt=text_prompt, target_type='PAE', clip_pae_args={'original_image': img_original, 'power': 4.0, 'method': 'GS'})
+    #clip_loss = CLIPLoss(text_prompt)
 
     original_latents = (data_geo_z.detach().cpu(), data_tex_z.detach().cpu())
     edited_latents = []
     res_loss = []
+    edited_images = []
 
     min_latent = None
     min_loss = float('inf')
+
+    save_n = 100
+    n_save = int(n_epochs)/save_n
 
     for i in range(n_epochs):
         print(i)
@@ -87,36 +92,42 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
 
         if edit_geo:
             loss_geo = lmbda_1 * ((geo_z - data_geo_z) ** 2).sum()
+            print(loss_geo)
         if edit_tex:
             loss_tex = lmbda_2 * ((tex_z - data_tex_z) ** 2).sum()
 
-        loss = loss_clip + loss_geo + loss_tex
+        loss = loss_clip # + loss_geo + loss_tex
         
         # Backpropagation
         loss.backward()
 
-        if abs(loss.item()) < min_loss:
-            min_loss = abs(loss.item())
-            min_latent = (geo_z.detach().cpu(), tex_z.detach().cpu())
+        with torch.no_grad():
+            if loss.item() < min_loss:
+                min_loss = loss.item()
+                min_latent = (geo_z.detach().cpu(), tex_z.detach().cpu())
 
-        res_loss.append(loss.item())
+            res_loss.append((loss.item(), loss_geo.item(), loss_clip.item()))
 
         t = i / n_epochs
-        lr = get_lr(t, 0.1)
+        lr_geo = get_lr(t, learning_rate_geo)
+        lr_tex = get_lr(t, learning_rate_tex)
 
         if edit_geo:
             optimizer_geo.step()
             optimizer_geo.zero_grad()
-            optimizer_geo.param_groups[0]['lr'] = lr
+            optimizer_geo.param_groups[0]['lr'] = lr_geo
         
         if edit_tex:
             optimizer_tex.step()
             optimizer_tex.zero_grad()
-            optimizer_tex.param_groups[0]['lr'] = lr
+            optimizer_tex.param_groups[0]['lr'] = lr_tex
 
-        edited_latents.append((geo_z.detach().cpu(), tex_z.detach().cpu()))
+        if i % n_save == 0:
+            edited_images.append(cur_output.cpu())
+
+        # edited_latents.append((geo_z.detach().cpu(), tex_z.detach().cpu()))
     
-    return original_latents, edited_latents, res_loss, min_latent
+    return original_latents, edited_latents, res_loss, min_latent, edited_images
 
 if __name__ == "__main__":
     c = None
@@ -125,23 +136,30 @@ if __name__ == "__main__":
 
     G_ema = constructGenerator(**c)
 
-    torch.manual_seed(4)
+    # Parameters
+    random_seed = 0
+    lmbda_1 = 0.001
+    lmbda_2 = 0.1
+    text_prompt = 'Sports Car'
+    n_epochs = 100
+
+    torch.manual_seed(random_seed)
 
     z = torch.randn([1, 512], device='cuda')  # random code for geometry
     tex_z = torch.randn([1, 512], device='cuda')  # random code for texture
 
-    original, edited, loss, min_latent = train_eval(G_ema, z, tex_z, 'Sports Car', n_epochs=100, lmbda_1=0.01, lmbda_2=0.001)
+    original, edited, loss, min_latent, edited_images = train_eval(G_ema, z, tex_z,  text_prompt, n_epochs=n_epochs, lmbda_1=lmbda_1, lmbda_2=lmbda_2, edit_tex=False)
 
     print(loss)
-    print(min([abs(l) for l in loss]))
+    print(min(loss))
 
     result = []
 
     with torch.no_grad():
         G_ema.eval()
-        img_original = eval_get3d_single(G_ema, original[0].to('cuda'), original[1].to('cuda'), torch.ones(1, device='cuda'))
-        img_edited = eval_get3d_single(G_ema, min_latent[0].to('cuda'), min_latent[1].to('cuda'), torch.ones(1, device='cuda'))
-        result.append((img_original.cpu(), img_edited.cpu()))
-    with open('output_img.pickle', 'wb') as f:
+        img_original = eval_get3d_single(G_ema, original[0].to('cuda'), original[1].to('cuda'), torch.ones(1, device='cuda')).cpu()
+        img_edited = eval_get3d_single(G_ema, min_latent[0].to('cuda'), min_latent[1].to('cuda'), torch.ones(1, device='cuda')).cpu()
+        result.append({'Original': img_original, 'Edited': img_edited, 'Loss': loss, 'Original Latent': original, 'Edited Latent': min_latent, 'Edited Images': edited_images})
+    with open(f'latent_optimization_adam_results_pae/output_img_{random_seed}_{lmbda_1}_{lmbda_2}_{text_prompt}_{n_epochs}_{time.time()}.pickle', 'wb') as f:
         pickle.dump(result, f)
     

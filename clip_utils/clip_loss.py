@@ -25,7 +25,7 @@ class CLIPLoss(torch.nn.Module):
             text_features = normalize(self.text_encoded)
             self.image_transformed = self.transform(clip_pae_args['original_image'])
             image_features = self.model.encode_image(self.image_transformed)
-            self.target, self.basis = get_pae(self.model, components=10, image_features=image_features, text_features=text_features, power=clip_pae_args['power'], clip_target=clip_pae_args['clip_target'])
+            self.target, self.basis = get_pae(image_features=image_features, text_features=text_features, power=clip_pae_args['power'], clip_target=clip_pae_args['clip_target'])
     
     def transform(self, array):
         lo, hi = -1, 1

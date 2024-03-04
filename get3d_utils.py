@@ -100,7 +100,6 @@ def eval_get3d_tensor(G_ema, grid_z, grid_tex_z, grid_c):
     return output_tensor
 
 def eval_get3d_single(G_ema, geo_z, tex_z, grid_c):
-    G_ema.update_w_avg()
     camera_list = G_ema.synthesis.generate_rotate_camera_list()
     camera = camera_list[4]
     img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
@@ -108,6 +107,35 @@ def eval_get3d_single(G_ema, geo_z, tex_z, grid_c):
         generate_no_light=True, truncation_psi=0.7, camera=camera)
     rgb_img = img[:, :3]
     return rgb_img
+
+def eval_get3d_weights(G_ema, geo_z, tex_z, grid_c):
+    # Step 1: Map the sampled z code to w-space
+    ws = G_ema.mapping(tex_z, grid_c, update_emas=True)
+    # geo_z = torch.randn_like(z)
+    ws_geo = G_ema.mapping_geo(
+        geo_z, grid_c,
+        update_emas=True)
+
+    # # Step 2: Apply style mixing to the latent code
+    # if self.style_mixing_prob > 0:
+    #     with torch.autograd.profiler.record_function('style_mixing'):
+    #         cutoff = torch.empty([], dtype=torch.int64, device=ws.device).random_(1, ws.shape[1])
+    #         cutoff = torch.where(
+    #             torch.rand([], device=ws.device) < self.style_mixing_prob, cutoff,
+    #             torch.full_like(cutoff, ws.shape[1]))
+    #         ws[:, cutoff:] = self.G.mapping(torch.randn_like(z), c, update_emas=False)[:, cutoff:]
+
+    #         cutoff = torch.empty([], dtype=torch.int64, device=ws_geo.device).random_(1, ws_geo.shape[1])
+    #         cutoff = torch.where(
+    #             torch.rand([], device=ws_geo.device) < self.style_mixing_prob, cutoff,
+    #             torch.full_like(cutoff, ws_geo.shape[1]))
+    #         ws_geo[:, cutoff:] = self.G.mapping_geo(torch.randn_like(z), c, update_emas=False)[:, cutoff:]
+
+    # Step 3: Generate rendered image of 3D generated shapes.
+    img, syn_camera, mask_pyramid, sdf_reg_loss, render_return_value = G_ema.synthesis(
+        ws, return_shape=False,
+        ws_geo=ws_geo)
+    return img[:, :3]
 
 def eval_get3d_single_intermediates(G_ema, ws_geo, ws_tex, grid_c):
     camera_list = G_ema.synthesis.generate_rotate_camera_list()

@@ -1,0 +1,55 @@
+Sedan
+Coupe
+Convertible
+Hatchback
+Station Wagon
+SUV (Sport Utility Vehicle)
+Crossover
+Minivan
+Pickup Truck
+Roadster
+Sports Car
+Muscle Car
+Luxury Car
+Electric Car
+Hybrid Car
+Plug-in Hybrid
+Compact Car
+Midsize Car
+Full-size Car
+Subcompact Car
+Economy Car
+Vintage Car
+Classic Car
+Compact SUV
+Midsize SUV
+Full-size SUV
+Crossover SUV
+Compact Crossover
+Luxury SUV
+Off-road Vehicle
+4x4
+Van
+Camper Van
+Minibus
+Compact MPV (Multi-Purpose Vehicle)
+Luxury Sedan
+Sports Sedan
+Executive Car
+City Car
+Supercar
+Hypercar
+Electric SUV
+Electric Pickup
+Autonomous Car
+Concept Car
+Green Car
+Family Car
+Compact Pickup
+Luxury Coupe
+Grand Tourer (GT)
+Rally Car
+Compact Electric Car
+Midsize Electric Car
+Luxury Electric Car
+Electric Sports Car

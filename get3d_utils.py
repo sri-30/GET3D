@@ -108,13 +108,23 @@ def eval_get3d_single(G_ema, geo_z, tex_z, grid_c):
     rgb_img = img[:, :3]
     return rgb_img
 
+
+def eval_get3d_weights_ws(G_ema, ws_geo, ws, grid_c):
+    with torch.no_grad():
+        camera_list = G_ema.synthesis.generate_rotate_camera_list()
+        camera = camera_list[4]
+    img, syn_camera, mask_pyramid, sdf_reg_loss, render_return_value = G_ema.synthesis(
+        ws, return_shape=False,
+        ws_geo=ws_geo, camera=camera)
+    return img[:, :3]
+
 def eval_get3d_weights(G_ema, geo_z, tex_z, grid_c):
     # Step 1: Map the sampled z code to w-space
-    ws = G_ema.mapping(tex_z, grid_c, update_emas=True)
+    ws = G_ema.mapping(tex_z, grid_c, update_emas=False)
     # geo_z = torch.randn_like(z)
     ws_geo = G_ema.mapping_geo(
         geo_z, grid_c,
-        update_emas=True)
+        update_emas=False)
 
     # # Step 2: Apply style mixing to the latent code
     # if self.style_mixing_prob > 0:
@@ -132,9 +142,12 @@ def eval_get3d_weights(G_ema, geo_z, tex_z, grid_c):
     #         ws_geo[:, cutoff:] = self.G.mapping_geo(torch.randn_like(z), c, update_emas=False)[:, cutoff:]
 
     # Step 3: Generate rendered image of 3D generated shapes.
+    with torch.no_grad():
+        camera_list = G_ema.synthesis.generate_rotate_camera_list()
+        camera = camera_list[4]
     img, syn_camera, mask_pyramid, sdf_reg_loss, render_return_value = G_ema.synthesis(
         ws, return_shape=False,
-        ws_geo=ws_geo)
+        ws_geo=ws_geo, camera=camera)
     return img[:, :3]
 
 def eval_get3d_single_intermediates(G_ema, ws_geo, ws_tex, grid_c):

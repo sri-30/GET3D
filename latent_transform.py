@@ -52,7 +52,8 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         c = torch.ones(1, device='cuda')
         img_original = eval_get3d_single(g_ema, data_geo_z, data_tex_z, c)
     
-    clip_loss = CLIPLoss(text_prompt=text_prompt, target_type='pae', clip_pae_args={'original_image': img_original, 'power': 5.0, 'clip_target': 'paePCA'})
+    #clip_loss = CLIPLoss(text_prompt=text_prompt, target_type='pae', clip_pae_args={'original_image': img_original, 'power': 5.0, 'clip_target': 'paePCA'})
+    clip_loss = CLIPLoss(text_prompt=text_prompt, target_type='directional', clip_pae_args={'original_image': img_original, 'source_text': 'car'})
     #clip_loss = CLIPLoss(text_prompt)
 
     original_latents = (data_geo_z.detach().cpu(), data_tex_z.detach().cpu())
@@ -104,7 +105,7 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         # if edit_tex:
         #     loss_tex = lmbda_2 * ((tex_z_edited - tex_z) ** 2).sum()
 
-        loss = loss_clip + loss_geo # + loss_tex
+        loss = loss_clip # + loss_geo # + loss_tex
         
         # Backpropagation
         loss.backward()
@@ -145,10 +146,10 @@ if __name__ == "__main__":
     G_ema = constructGenerator(**c)
 
     # Parameters
-    random_seed = 1
+    random_seed = 0
     lmbda_1 = 0.001
     lmbda_2 = 0.1
-    text_prompt= 'SUV'
+    text_prompt= 'Sports Car'
     n_epochs = 500
 
     torch.manual_seed(random_seed)

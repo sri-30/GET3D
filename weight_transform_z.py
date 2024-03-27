@@ -19,28 +19,32 @@ def preprocess_rgb(array):
     return img
 
 def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, edit_geo=True, edit_tex=True):
-    g_ema = copy.deepcopy(G)
-    g_ema.update_w_avg()
+    g_ema_frozen = copy.deepcopy(G)
+    g_ema_train = copy.deepcopy(G)
+    
+    g_ema_frozen.update_w_avg()
+    g_ema_train.update_w_avg()
+    
+    g_ema_frozen.requires_grad_(False)
+    g_ema_frozen.eval()
+
+    g_ema_train.mapping.requires_grad_(False)
+    g_ema_train.mapping_geo.requires_grad_(False)
+    g_ema_train.train()
+
     with torch.no_grad():
         grid_c = torch.ones(1, device='cuda')
         tex_z = data_tex_z.cuda()
         geo_z = data_geo_z.cuda()
 
-        data_ws = G_ema.mapping(tex_z, grid_c, update_emas=False)
-        data_ws_geo = G_ema.mapping_geo(
-            geo_z, grid_c,
-            update_emas=False)
+        img_original = eval_get3d_weights(g_ema_frozen, geo_z, tex_z, grid_c)
 
-    learning_rate = 1e-2
-    optimizer = torch.optim.Adam(g_ema.parameters(), lr=learning_rate)
-   
-    with torch.no_grad():
-        c = torch.ones(1, device='cuda')
-        img_original = eval_get3d_single(g_ema, geo_z, tex_z, c)
+    learning_rate = 1e-3
+    optimizer = torch.optim.Adam(g_ema_train.parameters(), lr=learning_rate)
     
     #clip_loss = CLIPLoss(text_prompt=text_prompt, target_type='PAE', clip_pae_args={'original_image': img_original, 'power': 0.3, 'clip_target': 'PCA+'})
     #clip_loss = CLIPLoss(text_prompt)
-    clip_loss = CLIPLoss(text_prompt=text_prompt, target_type='directional', clip_pae_args={'original_image': img_original, 'source_text': 'car'})
+    clip_loss = CLIPLoss(text_prompt=text_prompt, target_type='directional', clip_pae_args={'original_image': img_original, 'source_text': 'a car'})
 
     res_loss = []
     edited_images = []
@@ -53,13 +57,13 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
     for i in range(n_epochs):
         print(i)
 
-        ws_geo = data_ws_geo.detach()
-        ws = data_ws.detach()
+        z_geo = data_geo_z.detach()
+        z_tex = data_tex_z.detach()
 
         # Get output of GET3D on latents
         c = torch.ones(1, device='cuda')
-        g_ema.requires_grad_(True)
-        output = eval_get3d_weights_ws(g_ema, ws_geo, ws, c)
+        #g_ema.requires_grad_(True)
+        output = eval_get3d_weights(g_ema_train, z_geo, z_tex, c)
 
         cur_output = output.detach()
 
@@ -70,15 +74,15 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         # Backpropagation
         optimizer.zero_grad(set_to_none=False)
         loss.backward()
-        g_ema.requires_grad_(False)
+        #g_ema.requires_grad_(False)
 
-        params = [param for param in g_ema.parameters() if param.grad is not None]
-        if len(params) > 0:
-            flat = torch.cat([param.grad.flatten() for param in params])
-            misc.nan_to_num(flat, nan=0, posinf=1e5, neginf=-1e5, out=flat)
-            grads = flat.split([param.numel() for param in params])
-            for param, grad in zip(params, grads):
-                param.grad = grad.reshape(param.shape)
+        # params = [param for param in g_ema_train.parameters() if param.grad is not None]
+        # if len(params) > 0:
+        #     flat = torch.cat([param.grad.flatten() for param in params])
+        #     misc.nan_to_num(flat, nan=0, posinf=1e5, neginf=-1e5, out=flat)
+        #     grads = flat.split([param.numel() for param in params])
+        #     for param, grad in zip(params, grads):
+        #         param.grad = grad.reshape(param.shape)
         optimizer.step()
         
         t = i / n_epochs
@@ -98,7 +102,7 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         
         # edited_latents.append((geo_z_edited.detach().cpu(), tex_z_edited.detach().cpu()))
     
-    return g_ema, res_loss, edited_images
+    return g_ema_train, res_loss, edited_images
 
 if __name__ == "__main__":
     c = None
@@ -111,8 +115,8 @@ if __name__ == "__main__":
     random_seed = 0
     lmbda_1 = 0.001
     lmbda_2 = 0.1
-    text_prompt= 'Sports Car'
-    n_epochs = 500
+    text_prompt= 'a sports car'
+    n_epochs = 2000
 
     torch.manual_seed(random_seed)
 

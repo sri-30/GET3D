@@ -16,7 +16,7 @@ class CLIPLoss(torch.nn.Module):
         self.target_type = target_type
         self.text_prompt = text_prompt
         self.text_tokenized = clip.tokenize(text_prompt).to('cuda')
-        self.text_encoded = self.model.encode_text(torch.cat([clip.tokenize(text_prompt)]).cuda())
+        self.text_encoded = self.model.encode_text(clip.tokenize(text_prompt).cuda())
         self.cos_sim = torch.nn.CosineSimilarity()
         if self.target_type == 'text':
             self.target = self.text_tokenized
@@ -62,7 +62,7 @@ class CLIPLoss(torch.nn.Module):
         return self.target
             
 
-    def forward(self, image):
+    def forward(self, image, original_image=None):
         if self.target_type == 'text':
             image_processed = self.transform(image).unsqueeze(0)
             similarity = 1 - self.model(image_processed, self.text_tokenized)[0] / 100
@@ -76,10 +76,16 @@ class CLIPLoss(torch.nn.Module):
             c_loss = -1 * (self.cos_sim(image_features @ self.basis, self.target)).mean()
             return c_loss
         elif 'directional' in self.target_type:
+            if original_image is None:
+                original_image_features = self.image_original_encoded
+            else:
+                original_image_transformed = self.transform(original_image)
+                original_image_features = self.model.encode_image(original_image_transformed)
             image_processed = self.transform(image).unsqueeze(0)
             image_features = self.model.encode_image(image_processed)
-            img_direction = image_features - self.image_original_encoded
+            img_direction = image_features - original_image_features
             img_direction = img_direction/img_direction.clone().norm(dim=-1, keepdim=True)
             
-            #return 1 - self.cos_sim((image_features - self.image_original_encoded), self.direction)
-            return ((1 - torch.nn.MSELoss()(img_direction, self.direction)) + (1 - self.cos_sim(img_direction, self.direction)))/2
+            
+            return 1 - self.cos_sim(img_direction, self.direction).mean()
+            #return ((1 - torch.nn.MSELoss()(img_direction, self.direction)) + (1 - self.cos_sim(img_direction, self.direction)))/2

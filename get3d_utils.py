@@ -220,8 +220,11 @@ def determine_opt_layers(g_frozen, g_train, clip_loss, auto_layer_batch=3, auto_
         initial_w_tex_codes = g_frozen.mapping(sample_z_tex, c_dim)  # (B, 9, 512)
         initial_w_geo_codes = g_frozen.mapping_geo(sample_z_geo, c_dim)  # (B, 22, 512)
 
-    w_tex_codes = torch.Tensor(initial_w_tex_codes.cpu().detach().numpy()).to('cuda')
-    w_geo_codes = torch.Tensor(initial_w_geo_codes.cpu().detach().numpy()).to('cuda')
+    # w_tex_codes = torch.Tensor(initial_w_tex_codes.cpu().detach().numpy()).to('cuda')
+    # w_geo_codes = torch.Tensor(initial_w_geo_codes.cpu().detach().numpy()).to('cuda')
+
+    w_tex_codes = initial_w_tex_codes.clone()
+    w_geo_codes = initial_w_geo_codes.clone()
 
     w_tex_codes.requires_grad = True
     w_geo_codes.requires_grad = True
@@ -229,7 +232,8 @@ def determine_opt_layers(g_frozen, g_train, clip_loss, auto_layer_batch=3, auto_
     w_optim = torch.optim.SGD([w_tex_codes, w_geo_codes], lr=0.01)
 
     for _ in range(auto_layer_iters):
-        generated_from_w, _ = generate_img_layer(g_train, ws=w_tex_codes, ws_geo=w_geo_codes)  # (B, C, H, W)
+        # generated_from_w, _ = generate_img_layer(g_train, ws=w_tex_codes, ws_geo=w_geo_codes, cam_mv=g_frozen.synthesis.generate_rotate_camera_list()[4].repeat(w_tex_codes.shape[0], 1, 1, 1))  # (B, C, H, W)
+        generated_from_w = eval_get3d_angles(g_train, z_geo=w_geo_codes, z_tex=w_tex_codes, intermediate_space=True)
         w_loss = clip_loss.global_loss(generated_from_w).sum()
 
         w_optim.zero_grad()
@@ -257,7 +261,7 @@ def generate_img_layer(
     G_ema,
     ws,
     ws_geo,
-    texture_resolution=2048
+    cam_mv=None
 ):
     syn = G_ema.synthesis
     # (1) Generate 3D mesh first
@@ -277,9 +281,10 @@ def generate_img_layer(
 
     # (2) Generate random camera
     with torch.no_grad():
-        campos, cam_mv, rotation_angle, elevation_angle, sample_r = syn.generate_random_camera(
-            ws_tex.shape[0], n_views=1)
-        gen_camera = (campos, cam_mv, sample_r, rotation_angle, elevation_angle)
+        if cam_mv is None:
+            campos, cam_mv, rotation_angle, elevation_angle, sample_r = syn.generate_random_camera(
+                ws_tex.shape[0], n_views=1)
+            gen_camera = (campos, cam_mv, sample_r, rotation_angle, elevation_angle)
         run_n_view = 1
 
     # NOTE
@@ -332,16 +337,15 @@ def generate_img_layer(
 def eval_get3d_angles(G_ema, z_geo, z_tex, camera_idx=[4], intermediate_space=False):
     if intermediate_space:
         ws_geo = z_geo
-        ws_tex = z_tex
+        ws = z_tex
     else:
         ws_geo = G_ema.mapping_geo(z_geo, c=torch.ones(1, device='cuda'), truncation_psi=0.7, update_emas=False)
-        ws_tex = G_ema.mapping(z_tex, c=torch.ones(1, device='cuda'), truncation_psi=0.7, update_emas=False)
+        ws = G_ema.mapping(z_tex, c=torch.ones(1, device='cuda'), truncation_psi=0.7, update_emas=False)
     # -------------------      generate    ------------------- #
 
     # (1) Generate 3D mesh first
     # NOTE :
     # this code is shared by 'def generate' and 'def extract_3d_mesh'
-    ws = ws_tex
     syn = G_ema.synthesis
     if syn.one_3d_generator:
         sdf_feature, tex_feature = syn.generator.get_feature(
@@ -357,7 +361,7 @@ def eval_get3d_angles(G_ema, z_geo, z_tex, camera_idx=[4], intermediate_space=Fa
 
     # (2) Generate random camera
     with torch.no_grad():
-        cameras = syn.generate_rotate_camera_list()
+        cameras = [cam for i, cam in enumerate(syn.generate_rotate_camera_list()) if i in camera_idx]
     # NOTE
     # tex_pos: Position we want to query the texture field || List[(1,1024, 1024,3) * Batch]
     # tex_hard_mask = 2D silhoueete of the rendered image  || Tensor(Batch, 1024, 1024, 1)
@@ -367,9 +371,8 @@ def eval_get3d_angles(G_ema, z_geo, z_tex, camera_idx=[4], intermediate_space=Fa
     tex_hard_mask = []
     return_value = {'tex_pos': []}
 
-    for idx in camera_idx:
-        cam = cameras[idx]
-        antilias_mask_, hard_mask_, return_value_ = syn.render_mesh(mesh_v, mesh_f, cam)
+    for cam in cameras:
+        antilias_mask_, hard_mask_, return_value_ = syn.render_mesh(mesh_v, mesh_f, cam.repeat(z_geo.shape[0], 1, 1, 1))
         antilias_mask.append(antilias_mask_)
         tex_hard_mask.append(hard_mask_)
 

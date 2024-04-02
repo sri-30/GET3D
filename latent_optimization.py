@@ -9,7 +9,7 @@ from training_utils.training_utils import get_lr
 from get3d_utils import constructGenerator, eval_get3d_single, eval_get3d_weights, eval_get3d_angles
 
 def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, edit_geo=True, edit_tex=True, intermediate_space=False):
-    camera_idx = [4, 8, 12]
+    camera_idx = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     
     with torch.no_grad():
         g_ema = copy.deepcopy(G).eval()
@@ -49,12 +49,13 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         data_tex = data_tex_z.detach().clone()
         latent_geo = data_geo_z.detach().clone()
         latent_tex = data_tex_z.detach().clone()
-        z_optim = torch.optim.Adam([latent_geo, latent_tex], lr=learning_rate)
 
     original_latents = (latent_geo.detach().clone().cpu(), latent_tex.detach().clone().cpu())
 
     latent_geo.requires_grad_(True)
-    latent_tex.requires_grad_(False)
+    latent_tex.requires_grad_(True)
+
+    z_optim = torch.optim.Adam([latent_geo, latent_tex], lr=learning_rate, betas=(0.9, 0.99))
 
     for i in range(n_epochs):
         print(i)
@@ -64,10 +65,12 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         output = eval_get3d_angles(g_ema, latent_geo, latent_tex, camera_idx=camera_idx, intermediate_space=intermediate_space)
 
         # Get CLIP Loss
+        # loss_clip = clip_loss.directional_projection_loss(imgs_original, output).mean()
         # loss_clip = clip_loss(imgs_original, output)
         # loss_clip = clip_loss.projection_embedding_loss(output)
-        loss_clip = clip_loss.global_loss(output)
-        # loss_clip = clip_loss.projection_augmentation_loss(output)
+        # loss_clip = clip_loss.global_loss(output)
+        loss_clip = clip_loss.projection_augmentation_loss(output)
+        # loss_clip = clip_loss(imgs_original, output).mean()
 
         # Control similarity to original latents
         loss_geo = 0
@@ -79,29 +82,12 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
             loss_tex = lmbda_2 * ((latent_tex - data_tex) ** 2).sum()
 
         loss = loss_clip + loss_geo + loss_tex # + lmbda_geo_deviation * (geo_z ** 2).sum() + lmbda_tex_deviation * (tex_z ** 2).sum()
+ 
         # Backpropagation
-        
-
-        # lr_geo = get_lr(t, learning_rate_geo)
-        # lr_tex = get_lr(t, learning_rate_tex)
-        
         loss.backward()
+
         z_optim.step()
         z_optim.zero_grad()
-
-        # t = i / n_epochs
-        # lr = get_lr(t, learning_rate)
-        # z_optim.param_groups[0]['lr'] = lr
-
-        # if edit_geo:
-        #     optimizer_geo.step()
-        #     optimizer_geo.zero_grad()
-        # #    optimizer_geo.param_groups[0]['lr'] = lr_geo
-        
-        # if edit_tex:
-        #     optimizer_tex.step()
-        #     optimizer_tex.zero_grad()
-        # #    optimizer_tex.param_groups[0]['lr'] = lr_tex
 
         with torch.no_grad():
             if loss.item() < min_loss:
@@ -125,11 +111,11 @@ if __name__ == "__main__":
     G_ema = constructGenerator(**c)
 
     # Parameters
-    random_seed = 0
+    random_seed = 1
     lmbda_1 = 0.005
     lmbda_2 = 0.01
     text_prompt= 'SUV'
-    n_epochs = 200
+    n_epochs = 100
     intermediate_space=False
 
     torch.manual_seed(random_seed)

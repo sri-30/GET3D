@@ -6,7 +6,7 @@ import time
 
 from clip_utils.clip_loss_nada import CLIPLoss
 from training_utils.training_utils import get_lr
-from get3d_utils import constructGenerator, eval_get3d_single, eval_get3d_angles, eval_get3d_weights_ws, eval_nada, determine_opt_layers, unfreeze_generator_layers, freeze_generator_layers
+from get3d_utils import constructGenerator, eval_get3d_single, eval_get3d_angles, eval_get3d_weights_ws, eval_nada, determine_opt_layers, unfreeze_generator_layers, freeze_generator_layers, generate_random_camera, generate_rotate_camera_list
 from torch_utils import misc
 
 def preprocess_rgb(array):
@@ -43,8 +43,9 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
             update_emas=False)
         img_original = eval_get3d_single(g_ema_frozen, geo_z, tex_z, grid_c)
 
-    learning_rate = 1e-3
-    optimizer = torch.optim.Adam(g_ema_train.parameters(), 
+    learning_rate = 3e-4
+    opt_params = g_ema_train.synthesis.generator.tri_plane_synthesis.parameters()
+    optimizer = torch.optim.Adam(opt_params, 
                                 lr=learning_rate,
                                 betas=(0.9, 0.99))
 
@@ -60,16 +61,16 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
     n_batch = 3
     n_save = int(n_epochs)/save_n
 
-    camera_idx_ = [4]
-    camera_idx_epoch = {0: [4, 7], 1: [4, 7], 2: [6, 8], 3: [4, 7]}
-
-    n_training_samples = 500
+    n_training_samples = 250
 
     train_z_geo = torch.randn(n_training_samples, G.z_dim, device='cuda')
     train_z_tex = torch.randn(n_training_samples, G.z_dim, device='cuda')
 
     z_geo_split = torch.split(train_z_geo, n_batch, dim=0)
     z_tex_split = torch.split(train_z_tex, n_batch, dim=0)
+
+    # with torch.no_grad():
+    #     cameras = generate_rotate_camera_list()[1:14:2]
 
     for i in range(n_epochs):
         print(f'Epoch: {i}')
@@ -93,6 +94,8 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
 
                 z_geo = z_geo_split[j][k].unsqueeze(0)
                 z_tex = z_tex_split[j][k].unsqueeze(0)
+                # z_geo = data_geo_z.clone()
+                # z_tex = data_tex_z.clone()
 
                 with torch.no_grad():
                     ws_geo = g_ema_frozen.mapping_geo(z_geo, torch.ones(1, device='cuda'), update_emas=False, truncation_psi=0.7)
@@ -103,31 +106,36 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
 
                 # Get output of GET3D on latents
                 with torch.no_grad():
-                    frozen_img = eval_get3d_angles(g_ema_frozen, ws_geo, ws_tex, camera_idx=camera_idx_, intermediate_space=True)
+                    cameras = generate_random_camera(1, n_views=7)
+                    cameras = cameras.unsqueeze(0)
+                    cameras = cameras.transpose(0, 2)
+
+                    frozen_img = eval_get3d_angles(g_ema_frozen, ws_geo, ws_tex, cameras=cameras, intermediate_space=True)
                 
-                trainable_img = eval_get3d_angles(g_ema_train, ws_geo, ws_tex, camera_idx=camera_idx_, intermediate_space=True)
+                trainable_img = eval_get3d_angles(g_ema_train, ws_geo, ws_tex, cameras=cameras, intermediate_space=True)
 
                 # with torch.no_grad():
                 #     frozen_img = eval_nada(g_ema_frozen, g_ema_frozen,ws=ws_tex, ws_geo=ws_geo, n_cameras=2)
 
                 # trainable_img = eval_nada(g_ema_train, g_ema_frozen,ws=ws_tex, ws_geo=ws_geo, n_cameras=2)
 
-                loss += clip_loss(frozen_img, trainable_img).sum()
-                # loss += clip_loss.projection_augmentation_loss_nada(frozen_img, trainable_img)
+                # loss += clip_loss(frozen_img, trainable_img).sum()
+                loss += clip_loss.projection_augmentation_loss_nada(frozen_img, trainable_img)
 
-            torch.nn.utils.clip_grad_norm_(g_ema_frozen.parameters(), -1)
+            
 
             loss /= n_batch
 
             optimizer.zero_grad()
             loss.backward()
+            # torch.nn.utils.clip_grad_norm_(opt_params, -1)
             optimizer.step()
 
             with torch.no_grad():
                 g_ema_train.eval()
                 img_save = eval_get3d_weights_ws(g_ema_train, data_ws_geo, data_ws, 0)
-                loss_ = clip_loss(img_original, img_save).sum()
-                # loss_ = clip_loss.projection_augmentation_loss_nada(img_original, img_save)
+                # loss_ = clip_loss(img_original, img_save).sum()
+                loss_ = clip_loss.projection_augmentation_loss_nada(img_original, img_save)
                 res_loss.append((loss_.item(), 0, 0))
                 # edited_images.append(img_save.cpu())
             torch.cuda.empty_cache()
@@ -146,8 +154,8 @@ if __name__ == "__main__":
     random_seed = 2
     lmbda_1 = 0.001
     lmbda_2 = 0.1
-    text_prompt= 'Lamborghini'
-    n_epochs = 4
+    text_prompt= 'Sports Car'
+    n_epochs = 3
 
     torch.manual_seed(random_seed)
 

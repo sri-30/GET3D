@@ -3,8 +3,10 @@ import dnnlib
 from torch_utils.ops import conv2d_gradfix
 from torch_utils.ops import grid_sample_gradfix
 import copy
+from training.sample_camera_distribution import sample_camera, create_camera_from_angle
 
 import numpy as np
+import math
 
 def constructGenerator(
         run_dir='.',  # Output directory.
@@ -205,48 +207,43 @@ def unfreeze_generator_layers(g_ema, topk_idx_tex: list, topk_idx_geo: list):
             getattr(block, layer_name).requires_grad_(True)
             setattr(g_ema.synthesis.generator.tri_plane_synthesis, block_name, block)
 
-def determine_opt_layers(g_frozen, g_train, clip_loss, auto_layer_batch=3, auto_layer_iters=1, auto_layer_k=20):
-    """
-    original code : return chosen layers : List[nn.Modules, nn.Modules, ...]
-    this code     : return chosen layers idx : List[int, int, ...], List[int, int, ...]
-                    * note that this returns two list for tex. and geo.
-    """
+def determine_opt_layers(g_frozen, g_train, clip_loss, n_batch=8, epochs=1, k=20, preset_latent=None):
     z_dim = 512
     c_dim = 0
-    sample_z_tex = torch.randn(auto_layer_batch, z_dim, device='cuda')
-    sample_z_geo = torch.randn(auto_layer_batch, z_dim, device='cuda')
+    if preset_latent is None:
+        sample_z_tex = torch.randn(n_batch, z_dim, device='cuda')
+        sample_z_geo = torch.randn(n_batch, z_dim, device='cuda')
+    else:
+        sample_z_tex, sample_z_geo = preset_latent
 
     with torch.no_grad():
-        initial_w_tex_codes = g_frozen.mapping(sample_z_tex, c_dim)  # (B, 9, 512)
-        initial_w_geo_codes = g_frozen.mapping_geo(sample_z_geo, c_dim)  # (B, 22, 512)
+        ws_tex_original = g_frozen.mapping(sample_z_tex, c_dim)  # (B, 9, 512)
+        ws_geo_original = g_frozen.mapping_geo(sample_z_geo, c_dim)  # (B, 22, 512)
 
-    # w_tex_codes = torch.Tensor(initial_w_tex_codes.cpu().detach().numpy()).to('cuda')
-    # w_geo_codes = torch.Tensor(initial_w_geo_codes.cpu().detach().numpy()).to('cuda')
+    ws_tex = ws_tex_original.clone()
+    ws_geo = ws_geo_original.clone()
 
-    w_tex_codes = initial_w_tex_codes.clone()
-    w_geo_codes = initial_w_geo_codes.clone()
+    ws_tex.requires_grad = True
+    ws_geo.requires_grad = True
 
-    w_tex_codes.requires_grad = True
-    w_geo_codes.requires_grad = True
+    w_optim = torch.optim.SGD([ws_tex, ws_geo], lr=0.01)
 
-    w_optim = torch.optim.SGD([w_tex_codes, w_geo_codes], lr=0.01)
+    for _ in range(epochs):
+        # generated_from_w, _ = generate_img_layer(g_train, ws=ws_tex, ws_geo=ws_geo, cam_mv=g_frozen.synthesis.generate_rotate_camera_list()[4].repeat(ws_tex.shape[0], 1, 1, 1))  # (B, C, H, W)
+        img_edited = eval_get3d_angles(g_train, z_geo=ws_geo, z_tex=ws_tex, cameras=[generate_rotate_camera_list()[4]], intermediate_space=True)
+        w_loss = clip_loss.global_loss(img_edited).mean()
 
-    for _ in range(auto_layer_iters):
-        # generated_from_w, _ = generate_img_layer(g_train, ws=w_tex_codes, ws_geo=w_geo_codes, cam_mv=g_frozen.synthesis.generate_rotate_camera_list()[4].repeat(w_tex_codes.shape[0], 1, 1, 1))  # (B, C, H, W)
-        generated_from_w = eval_get3d_angles(g_train, z_geo=w_geo_codes, z_tex=w_tex_codes, intermediate_space=True)
-        w_loss = clip_loss.global_loss(generated_from_w).sum()
-
-        w_optim.zero_grad()
         w_loss.backward()
         w_optim.step()
+        w_optim.zero_grad()
 
-    layer_tex_weights = torch.abs(w_tex_codes - initial_w_tex_codes).mean(dim=-1).mean(dim=0)
-    layer_geo_weights = torch.abs(w_geo_codes - initial_w_geo_codes).mean(dim=-1).mean(dim=0)
+    tex_distance = (ws_tex - ws_tex_original).abs().mean(dim=-1).mean(dim=0)
+    geo_distance = (ws_geo - ws_geo_original).abs().mean(dim=-1).mean(dim=0)
 
-    cutoff = len(layer_tex_weights)
+    cutoff = len(tex_distance)
 
-    chosen_layers_idx = torch.topk(torch.cat([layer_tex_weights, layer_geo_weights], dim=0), auto_layer_k)[
-        1].cpu().numpy().tolist()
+    chosen_layers_idx = torch.topk(torch.cat([tex_distance, geo_distance], dim=0), k)[1].tolist()
+
     chosen_layer_idx_tex = []
     chosen_layer_idx_geo = []
     for idx in chosen_layers_idx:
@@ -334,7 +331,37 @@ def generate_img_layer(
 
     return img, None
 
-def eval_get3d_angles(G_ema, z_geo, z_tex, camera_idx=[4], intermediate_space=False):
+def generate_rotate_camera_list(n_batch=1):
+        '''
+        Generate a camera list for rotating the object.
+        :param n_batch:
+        :return:
+        '''
+        n_camera = 24
+        camera_radius = 1.2  # align with what ww did in blender
+        camera_r = torch.zeros(n_camera, 1, device='cuda') + camera_radius
+        camera_phi = torch.zeros(n_camera, 1, device='cuda') + (90.0 - 15.0) / 90.0 * 0.5 * math.pi
+        camera_theta = torch.range(0, n_camera - 1, device='cuda').unsqueeze(dim=-1) / n_camera * math.pi * 2.0
+        camera_theta = -camera_theta
+        world2cam_matrix, camera_origin, _, _, _ = create_camera_from_angle(
+            camera_phi, camera_theta, camera_r, device='cuda')
+        camera_list = [world2cam_matrix[i:i + 1].expand(n_batch, -1, -1).unsqueeze(dim=1) for i in range(n_camera)]
+        return camera_list
+
+def generate_random_camera(batch_size, n_views=2):
+        '''
+        Sample a random camera from the camera distribution during training
+        :param batch_size: batch size for the generator
+        :param n_views: number of views for each shape within a batch
+        :return:
+        '''
+        sample_r = None
+        world2cam_matrix, forward_vector, camera_origin, rotation_angle, elevation_angle = sample_camera(
+            'shapenet_car', batch_size * n_views, 'cuda')
+        mv_batch = world2cam_matrix
+        return mv_batch.reshape(batch_size, n_views, 4, 4)
+
+def eval_get3d_angles(G_ema, z_geo, z_tex, cameras=[], intermediate_space=False):
     if intermediate_space:
         ws_geo = z_geo
         ws = z_tex
@@ -359,9 +386,6 @@ def eval_get3d_angles(G_ema, z_geo, z_tex, camera_idx=[4], intermediate_space=Fa
 
     ws_tex = ws
 
-    # (2) Generate random camera
-    with torch.no_grad():
-        cameras = [cam for i, cam in enumerate(syn.generate_rotate_camera_list()) if i in camera_idx]
     # NOTE
     # tex_pos: Position we want to query the texture field || List[(1,1024, 1024,3) * Batch]
     # tex_hard_mask = 2D silhoueete of the rendered image  || Tensor(Batch, 1024, 1024, 1)
@@ -371,7 +395,7 @@ def eval_get3d_angles(G_ema, z_geo, z_tex, camera_idx=[4], intermediate_space=Fa
     tex_hard_mask = []
     return_value = {'tex_pos': []}
 
-    for cam in cameras:
+    for i, cam in enumerate(cameras):
         antilias_mask_, hard_mask_, return_value_ = syn.render_mesh(mesh_v, mesh_f, cam.repeat(z_geo.shape[0], 1, 1, 1))
         antilias_mask.append(antilias_mask_)
         tex_hard_mask.append(hard_mask_)
@@ -383,9 +407,9 @@ def eval_get3d_angles(G_ema, z_geo, z_tex, camera_idx=[4], intermediate_space=Fa
     tex_hard_mask = torch.cat(tex_hard_mask, dim=0)  # (B*n_view, 1024, 1024, 3)
     tex_pos = return_value['tex_pos']
 
-    ws_tex = ws_tex.repeat(len(camera_idx), 1, 1)
-    ws_geo = ws_geo.repeat(len(camera_idx), 1, 1)
-    tex_feature = tex_feature.repeat(len(camera_idx), 1, 1, 1)
+    ws_tex = ws_tex.repeat(len(cameras), 1, 1)
+    ws_geo = ws_geo.repeat(len(cameras), 1, 1)
+    tex_feature = tex_feature.repeat(len(cameras), 1, 1, 1)
 
     # (4) Querying the texture field to predict the texture feature for each pixel on the image
     if syn.one_3d_generator:

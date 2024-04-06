@@ -132,7 +132,7 @@ class CLIPLoss(torch.nn.Module):
                 self.projection_target = (F.normalize(self.target_text_encoded) @ self.components.T).softmax(dim=-1)
                 if not original_images is None:
                     self.original_images_embeddings = self.model.encode_image(self.preprocess(original_images))
-                    self.pae_targets = get_pae(self.model, {'power': 6, 'target': 'None+', 'components': len(corpus)}, self.original_images_embeddings, F.normalize(self.target_text_encoded), corpus)
+                    self.pae_targets = get_pae(self.model, {'power': 3.5, 'target': 'None+', 'components': len(corpus)}, self.original_images_embeddings, F.normalize(self.target_text_encoded), corpus)
 
     def projection_embedding_loss(self, image):
         # Get image embedding
@@ -168,14 +168,14 @@ class CLIPLoss(torch.nn.Module):
             sim_scores[i] = torch.dot(image_encoded[i], self.pae_targets[i])/(image_encoded[i].norm() * self.pae_targets[i].norm())
         return 1 - sim_scores.mean()
 
-    def projection_augmentation_loss_nada(self, image_original, image_target):
+    def projection_augmentation_loss_nada(self, image_original, image_target, power=8):
         image_original_processed = self.preprocess(image_original)
         image_original_encoded = self.model.encode_image(image_original_processed)
 
         image_target_processed = self.preprocess(image_target)
         image_target_encoded = self.model.encode_image(image_target_processed)
 
-        pae = get_pae(self.model, {'power': 8, 'target': 'None+', 'components': len(self.corpus_text)}, image_original_encoded, F.normalize(self.target_text_encoded), self.corpus_text)
+        pae = get_pae(self.model, {'power': power, 'target': 'None+', 'components': len(self.corpus_text)}, image_original_encoded, F.normalize(self.target_text_encoded), self.corpus_text)
         sim_scores = torch.zeros((image_target_encoded.shape[0]))
         for i, _ in enumerate(image_target_encoded):
             sim_scores[i] = torch.dot(image_target_encoded[i], pae[i])/(image_target_encoded[i].norm() * pae[i].norm())
@@ -208,13 +208,13 @@ class CLIPLoss(torch.nn.Module):
         img_direction = img_direction/img_direction.clone().norm(dim=-1, keepdim=True)
         return 1. - F.cosine_similarity(img_direction, self.direction)
 
-    def forward(self, source_image, target_image=None):
+    def forward(self, source_image, target_image):
         # return self.directional_loss(source_image, target_image) + self.directional_loss_(source_image, target_image)
         source_preprocessed = self.preprocess(source_image)
         target_preprocessed = self.preprocess(target_image)
         source_encoded = self.model.encode_image(source_preprocessed)
         target_encoded = self.model.encode_image(target_preprocessed)
         img_direction = target_encoded - source_encoded
-        img_direction = img_direction/img_direction.clone().norm(dim=-1, keepdim=True)
+        img_direction = F.normalize(img_direction)
         return 1. - F.cosine_similarity(img_direction, self.direction)
             #return ((1 - torch.nn.MSELoss()(img_direction, self.direction)) + (1 - self.cos_sim(img_direction, self.direction)))/2

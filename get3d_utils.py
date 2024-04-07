@@ -4,6 +4,7 @@ from torch_utils.ops import conv2d_gradfix
 from torch_utils.ops import grid_sample_gradfix
 import copy
 from training.sample_camera_distribution import sample_camera, create_camera_from_angle
+from training.utils.utils_3d import savemeshtes2
 
 import numpy as np
 import math
@@ -360,6 +361,17 @@ def generate_random_camera(batch_size, n_views=2):
             'shapenet_car', batch_size * n_views, 'cuda')
         mv_batch = world2cam_matrix
         return mv_batch.reshape(batch_size, n_views, 4, 4)
+
+def save_textured_mesh(G_ema, ws_geo, ws_tex, filename='default'):
+    mesh_v, mesh_f, all_uvs, all_mesh_tex_idx, _ = G_ema.synthesis.extract_3d_shape(ws_tex, ws_geo)
+    savemeshtes2(
+                    mesh_v[0].data.cpu().numpy(),
+                    all_uvs[0].data.cpu().numpy(),
+                    mesh_f[0].data.cpu().numpy(),
+                    all_mesh_tex_idx[0].data.cpu().numpy(),
+                    filename
+                )
+
 
 def eval_get3d_angles(G_ema, z_geo, z_tex, cameras=[], intermediate_space=False):
     if intermediate_space:

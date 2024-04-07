@@ -1,6 +1,6 @@
 import subprocess
 
-random_seed_limit = 3
+random_seed_limit = 50
 
 text_prompts = ['Sports Car', 'SUV', 'Hatchback', 'Sedan']
 

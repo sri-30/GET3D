@@ -6,7 +6,7 @@ import time
 
 from clip_utils.clip_loss_nada import CLIPLoss
 from training_utils.training_utils import get_lr
-from get3d_utils import constructGenerator, eval_get3d_single, eval_get3d_weights, eval_get3d_angles, generate_random_camera, generate_rotate_camera_list
+from get3d_utils import constructGenerator, save_textured_mesh, eval_get3d_angles, generate_random_camera, generate_rotate_camera_list
 
 def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, edit_geo=True, edit_tex=True, intermediate_space=False, loss_type = 'global', corpus_type='body_type'):
     camera_list = generate_rotate_camera_list()
@@ -85,6 +85,8 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
             loss_clip = clip_loss.global_loss(output_edited)
         elif loss_type == 'pae':
             loss_clip = clip_loss.projection_augmentation_loss_nada(output_original, output_edited, power=8)
+        elif loss_type == 'directional':
+            loss_clip = clip_loss.directional_loss(output_original, output_edited)
         else:
             raise NotImplementedError
         # loss_clip = clip_loss(output_original, output_edited).mean()
@@ -160,6 +162,8 @@ if __name__ == "__main__":
         cameras = generate_rotate_camera_list()
         img_original = eval_get3d_angles(G_ema, original[0].to('cuda'), original[1].to('cuda'), cameras=cameras, intermediate_space=intermediate_space).cpu()
         img_edited = eval_get3d_angles(G_ema, min_latent[0].to('cuda'), min_latent[1].to('cuda'), cameras=cameras, intermediate_space=intermediate_space).cpu()
+        save_textured_mesh(G_ema, original[0].to('cuda'), original[1].to('cuda'), f'meshes_saved/output_{random_seed}_original.obj')
+        save_textured_mesh(G_ema, min_latent[0].to('cuda'), min_latent[1].to('cuda'), f'meshes_saved/output_{random_seed}_{text_prompt_}_{loss_type_}.obj')
         # result.append({'Original': img_original, 'Edited': img_edited, 'Loss': loss, 'Original Latent': original, 'Edited Latent': min_latent, 'Edited Images': edited_images})
     # with open(f'latent_transform_adam_results_pae/output_img_{random_seed}_{lmbda_1}_{lmbda_2}_{text_prompt}_{n_epochs}_{time.time()}.pickle', 'wb') as f:
     #     pickle.dump(result, f)

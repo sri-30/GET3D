@@ -143,7 +143,10 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
     return g_ema_train, res_loss, edited_images
 
 if __name__ == "__main__":
+    import sys
 
+    print(sys.argv)
+    _, random_seed_, text_prompt_, loss_type_ = sys.argv
 
     with open('test.pickle', 'rb') as f:
             c = pickle.load(f)
@@ -174,7 +177,11 @@ if __name__ == "__main__":
         img_original = eval_get3d_single(G_ema, z, tex_z, torch.ones(1, device='cuda')).cpu()
         img_edited = eval_get3d_single(G_new, z, tex_z, torch.ones(1, device='cuda')).cpu()
         result.append({'Original': img_original, 'Edited': img_edited, 'Loss': loss, 'Edited Images': edited_images})
-    with open(f'weight_transform_results/output_img_{random_seed}_{lmbda_1}_{lmbda_2}_{text_prompt}_{n_epochs}_{time.time()}.pickle', 'wb') as f:
-        pickle.dump(result, f)
+    # with open(f'weight_transform_results/output_img_{random_seed}_{lmbda_1}_{lmbda_2}_{text_prompt}_{n_epochs}_{time.time()}.pickle', 'wb') as f:
+    #     pickle.dump(result, f)
+    snapshot_data = dict(
+                G=G_ema, G_ema=G_ema)
+    all_model_dict = {'G': snapshot_data['G'].state_dict(), 'G_ema': snapshot_data['G_ema'].state_dict()}
+    torch.save(all_model_dict, f'{text_prompt}_{loss_type_}')
     
     

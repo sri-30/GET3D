@@ -7,6 +7,9 @@ import time
 from clip_utils.clip_loss_nada import CLIPLoss
 from training_utils.training_utils import get_lr
 from get3d_utils import constructGenerator, save_textured_mesh, eval_get3d_angles, generate_random_camera, generate_rotate_camera_list
+from torch.utils.tensorboard import SummaryWriter
+
+writer = SummaryWriter("./runs")
 
 def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, edit_geo=True, edit_tex=True, intermediate_space=False, loss_type = 'global', corpus_type='body_type'):
     camera_list = generate_rotate_camera_list()
@@ -105,6 +108,8 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         # Backpropagation
         loss.backward()
 
+        writer.add_scalar("Loss/train", loss, i)
+
         # Update Optimizer
         z_optim.step()
         z_optim.zero_grad()
@@ -151,6 +156,8 @@ if __name__ == "__main__":
     tex_z = torch.randn([1, 512], device='cuda')  # random code for texture
 
     original, edited, loss, min_latent, edited_images = train_eval(G_ema, z, tex_z, text_prompt, n_epochs=n_epochs, lmbda_1=lmbda_1, lmbda_2=lmbda_2, intermediate_space=intermediate_space, loss_type=loss_type_)
+
+    writer.close()
 
     print(loss)
     print(min(loss))

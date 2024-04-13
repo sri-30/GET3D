@@ -253,6 +253,12 @@ def determine_opt_layers(g_frozen, g_train, clip_loss, n_batch=8, epochs=1, k=20
         else:
             chosen_layer_idx_tex.append(idx)
 
+    del ws_geo_original
+    del ws_geo
+    del ws_tex_original
+    del ws_tex
+    torch.cuda.empty_cache()
+
     return chosen_layer_idx_tex, chosen_layer_idx_geo
 
 def generate_img_layer(
@@ -363,14 +369,27 @@ def generate_random_camera(batch_size, n_views=2):
         return mv_batch.reshape(batch_size, n_views, 4, 4)
 
 def save_textured_mesh(G_ema, ws_geo, ws_tex, filename='default'):
-    mesh_v, mesh_f, all_uvs, all_mesh_tex_idx, _ = G_ema.synthesis.extract_3d_shape(ws_tex, ws_geo)
+    import PIL
+    import cv2
+    mesh_v, mesh_f, all_uvs, all_mesh_tex_idx, tex_map = G_ema.synthesis.extract_3d_shape(ws_tex, ws_geo)
     savemeshtes2(
-                    mesh_v[0].data.cpu().numpy(),
-                    all_uvs[0].data.cpu().numpy(),
-                    mesh_f[0].data.cpu().numpy(),
-                    all_mesh_tex_idx[0].data.cpu().numpy(),
-                    filename
-                )
+        mesh_v[0].data.cpu().numpy(),
+        all_uvs[0].data.cpu().numpy(),
+        mesh_f[0].data.cpu().numpy(),
+        all_mesh_tex_idx[0].data.cpu().numpy(),
+        filename
+    )
+    lo, hi = (-1, 1)
+    img = np.asarray(tex_map[0].permute(1, 2, 0).data.cpu().numpy(), dtype=np.float32)
+    img = (img - lo) * (255 / (hi - lo))
+    img = img.clip(0, 255)
+    mask = np.sum(img.astype(float), axis=-1, keepdims=True)
+    mask = (mask <= 3.0).astype(float)
+    kernel = np.ones((3, 3), 'uint8')
+    dilate_img = cv2.dilate(img, kernel, iterations=1)
+    img = img * (1 - mask) + dilate_img * mask
+    img = img.clip(0, 255).astype(np.uint8)
+    PIL.Image.fromarray(np.ascontiguousarray(img[::-1, :, :]), 'RGB').save(filename.replace('.obj', '.png'))
 
 
 def eval_get3d_angles(G_ema, z_geo, z_tex, cameras=[], intermediate_space=False):

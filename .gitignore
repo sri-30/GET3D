@@ -9,3 +9,8 @@ latent_optimization_adam_results_pae
 weight_transform_results
 latents_saved
 meshes_saved
+runs
+generators_saved
+latent_mapper_saved
+eval_meshes
+metrics_saved

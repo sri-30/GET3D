@@ -8,6 +8,9 @@ from clip_utils.clip_loss_nada import CLIPLoss
 from training_utils.training_utils import get_lr
 from get3d_utils import constructGenerator, eval_get3d_single, eval_get3d_angles, eval_get3d_weights_ws, eval_nada, determine_opt_layers, unfreeze_generator_layers, freeze_generator_layers, generate_random_camera, generate_rotate_camera_list
 from torch_utils import misc
+# from torch.utils.tensorboard import SummaryWriter
+
+# writer = SummaryWriter(log_dir='./runs/')
 
 def preprocess_rgb(array):
     lo, hi = -1, 1
@@ -18,7 +21,12 @@ def preprocess_rgb(array):
     img.clip(0, 255)
     return img
 
-def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, edit_geo=True, edit_tex=True):
+# grads = []
+
+def train_eval(G, text_prompt, n_epochs=5, loss_type='global'):
+
+    camera_list = generate_rotate_camera_list()[::4]
+
     g_ema_frozen = copy.deepcopy(G)
     g_ema_train = copy.deepcopy(G)
     
@@ -32,52 +40,41 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
     g_ema_train.mapping_geo.requires_grad_(False)
     g_ema_train.train()
 
-    with torch.no_grad():
-        grid_c = torch.ones(1, device='cuda')
-        tex_z = data_tex_z.cuda()
-        geo_z = data_geo_z.cuda()
-
-        data_ws = g_ema_frozen.mapping(tex_z, grid_c, update_emas=False)
-        data_ws_geo = g_ema_frozen.mapping_geo(
-            geo_z, grid_c,
-            update_emas=False)
-        img_original = eval_get3d_single(g_ema_frozen, geo_z, tex_z, grid_c)
-
-    learning_rate = 3e-4
+    learning_rate = 8e-4
     opt_params = g_ema_train.synthesis.generator.tri_plane_synthesis.parameters()
     optimizer = torch.optim.Adam(opt_params, 
                                 lr=learning_rate,
                                 betas=(0.9, 0.99))
 
-    #clip_loss = CLIPLoss(text_prompt=text_prompt, target_type='PAE', clip_pae_args={'original_image': img_original, 'power': 0.3, 'clip_target': 'PCA+'})
-    #clip_loss = CLIPLoss(text_prompt)
     clip_loss = CLIPLoss(source_text='car', target_text=text_prompt, corpus=['Sports Car', 'SUV', 'Hatchback', 'Sedan'], aux_string='')
-    res_loss = []
-    edited_images = []
 
-    min_loss = float('inf')
+    n_batch = 5
 
-    save_n = 100
-    n_batch = 3
-    n_save = int(n_epochs)/save_n
-
-    n_training_samples = 250
-
+    n_training_samples = 90
     train_z_geo = torch.randn(n_training_samples, G.z_dim, device='cuda')
     train_z_tex = torch.randn(n_training_samples, G.z_dim, device='cuda')
 
-    z_geo_split = torch.split(train_z_geo, n_batch, dim=0)
-    z_tex_split = torch.split(train_z_tex, n_batch, dim=0)
+    n_val = 3
+    validation_geo = torch.randn(n_val, G.z_dim, device='cuda')
+    validation_tex = torch.randn(n_val, G.z_dim, device='cuda')
 
-    # with torch.no_grad():
-    #     cameras = generate_rotate_camera_list()[1:14:2]
+    with torch.no_grad():
+        validation_geo = g_ema_frozen.mapping_geo(validation_geo, torch.ones(1, device='cuda'), update_emas=False, truncation_psi=0.7)[:,0,]
+        validation_tex = g_ema_frozen.mapping(validation_tex, torch.ones(1, device='cuda'), update_emas=False, truncation_psi=0.7)[:,0,]
+
+        train_ws_geo = g_ema_frozen.mapping_geo(train_z_geo, torch.ones(1, device='cuda'), update_emas=False, truncation_psi=0.7)[:,0,]
+        train_ws_tex = g_ema_frozen.mapping(train_z_tex, torch.ones(1, device='cuda'), update_emas=False, truncation_psi=0.7)[:,0,]
+
+    ws_geo_split = torch.split(train_ws_geo, n_batch, dim=0)
+    ws_tex_split = torch.split(train_ws_tex, n_batch, dim=0)
+
+    training_loss = []
+    validation_loss = []
 
     for i in range(n_epochs):
         print(f'Epoch: {i}')
-        loss = 0
 
-
-        for j in range(len(z_geo_split)):
+        for j in range(len(ws_geo_split)):
             print(f'Batch: {j}')
 
             # Layer freezing
@@ -86,23 +83,14 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
             freeze_generator_layers(g_ema_train)
             unfreeze_generator_layers(g_ema_train, topk_idx_tex, topk_idx_geo)
 
-            loss = 0
+            loss_log = 0
 
-            for k in range(len(z_geo_split[j])):
+            for k in range(len(ws_geo_split[j])):
 
                 g_ema_train.train()
 
-                z_geo = z_geo_split[j][k].unsqueeze(0)
-                z_tex = z_tex_split[j][k].unsqueeze(0)
-                # z_geo = data_geo_z.clone()
-                # z_tex = data_tex_z.clone()
-
-                with torch.no_grad():
-                    ws_geo = g_ema_frozen.mapping_geo(z_geo, torch.ones(1, device='cuda'), update_emas=False, truncation_psi=0.7)
-                    ws_tex = g_ema_frozen.mapping(z_tex, torch.ones(1, device='cuda'), update_emas=False, truncation_psi=0.7)
-                
-                #ws_geo.requires_grad_(True)
-                #ws_tex.requires_grad_(True)
+                ws_geo = ws_geo_split[j][k].unsqueeze(0).repeat(1, g_ema_frozen.synthesis.generator.num_ws_geo, 1)
+                ws_tex = ws_tex_split[j][k].unsqueeze(0).repeat(1, g_ema_frozen.synthesis.generator.num_ws_tex, 1)
 
                 # Get output of GET3D on latents
                 with torch.no_grad():
@@ -114,33 +102,55 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
                 
                 trainable_img = eval_get3d_angles(g_ema_train, ws_geo, ws_tex, cameras=cameras, intermediate_space=True)
 
-                # with torch.no_grad():
-                #     frozen_img = eval_nada(g_ema_frozen, g_ema_frozen,ws=ws_tex, ws_geo=ws_geo, n_cameras=2)
+                if loss_type == 'global':
+                    loss = clip_loss.global_loss(trainable_img)
+                elif loss_type == 'pae':
+                    loss = clip_loss.projection_augmentation_loss_nada(frozen_img, trainable_img)
+                elif loss_type == 'directional':
+                    loss = clip_loss(frozen_img, trainable_img).sum()
+                else:
+                    raise NotImplementedError
+                
+                loss.backward()
+                with torch.no_grad():
+                    loss_log += loss.item()
 
-                # trainable_img = eval_nada(g_ema_train, g_ema_frozen,ws=ws_tex, ws_geo=ws_geo, n_cameras=2)
-
-                # loss += clip_loss(frozen_img, trainable_img).sum()
-                loss += clip_loss.projection_augmentation_loss_nada(frozen_img, trainable_img)
-
+            # for param in opt_params:
+            #     print(param.grad.norm())
+            # with torch.no_grad():
+            #     grads.append([param.grad.norm().item() for param in g_ema_train.synthesis.parameters() if param.requires_grad])
+            # for param in g_ema_train.synthesis.parameters():
+            #     print(param.grad.norm())
             
+            # writer.add_scalar(f"Weight Transform {text_prompt} {loss_type} 9", loss_log/len(z_geo_split[j]), i*len(z_geo_split) + j)
 
-            loss /= n_batch
-
-            optimizer.zero_grad()
-            loss.backward()
-            # torch.nn.utils.clip_grad_norm_(opt_params, -1)
+            # torch.nn.utils.clip_grad_norm_(g_ema_train.synthesis.generator.tri_plane_synthesis.parameters(), 1)
             optimizer.step()
-
-            with torch.no_grad():
-                g_ema_train.eval()
-                img_save = eval_get3d_weights_ws(g_ema_train, data_ws_geo, data_ws, 0)
-                # loss_ = clip_loss(img_original, img_save).sum()
-                loss_ = clip_loss.projection_augmentation_loss_nada(img_original, img_save)
-                res_loss.append((loss_.item(), 0, 0))
-                # edited_images.append(img_save.cpu())
+            optimizer.zero_grad()
             torch.cuda.empty_cache()
 
-    return g_ema_train, res_loss, edited_images
+            # Validation
+            with torch.no_grad():
+                training_loss.append(loss_log / n_batch)
+                g_ema_train.eval()
+                validation_img_original = eval_get3d_angles(g_ema_frozen, validation_geo.repeat(1, g_ema_frozen.synthesis.generator.num_ws_geo, 1), validation_tex.repeat(1, g_ema_frozen.synthesis.generator.num_ws_geo, 1), cameras=camera_list, intermediate_space=True)
+                validation_img_edited = eval_get3d_angles(g_ema_train, validation_geo.repeat(1, g_ema_frozen.synthesis.generator.num_ws_geo, 1), validation_tex.repeat(1, g_ema_frozen.synthesis.generator.num_ws_geo, 1), cameras=camera_list, intermediate_space=True)
+                if loss_type == 'global':
+                    loss_ = clip_loss.global_loss(validation_img_edited)
+                elif loss_type == 'pae':
+                    loss_ = clip_loss.projection_augmentation_loss_nada(validation_img_original, validation_img_edited)
+                elif loss_type == 'directional':
+                    loss_ = clip_loss(validation_img_original, validation_img_edited).sum()
+                else:
+                    raise NotImplementedError
+                
+                # loss_ = clip_loss(img_original, img_save).sum()
+                # loss_ = clip_loss.projection_augmentation_loss_nada(validation_img_original, validation_img_edited)
+                validation_loss.append(loss_.item())
+                # edited_images.append(img_save.cpu())
+            
+
+    return g_ema_train, training_loss, validation_loss
 
 if __name__ == "__main__":
     import sys
@@ -154,34 +164,43 @@ if __name__ == "__main__":
     G_ema = constructGenerator(**c)
 
     # Parameters
-    random_seed = 2
-    lmbda_1 = 0.001
-    lmbda_2 = 0.1
-    text_prompt= 'Sports Car'
-    n_epochs = 3
+    random_seed = random_seed_
+    text_prompt= text_prompt_
+    n_epochs = 10
 
     torch.manual_seed(random_seed)
 
     z = torch.randn([1, 512], device='cuda')  # random code for geometry
     tex_z = torch.randn([1, 512], device='cuda')  # random code for texture
 
-    G_new, loss, edited_images = train_eval(G_ema, z, tex_z, text_prompt, n_epochs=n_epochs, lmbda_1=lmbda_1, lmbda_2=lmbda_2, edit_tex=False)
+    G_new, train_loss, val_loss = train_eval(G_ema, z, tex_z, text_prompt, n_epochs=n_epochs, loss_type=loss_type_)
+    
+    # writer.flush()
+    # writer.close()
 
-    print(loss)
-    print(min(loss))
+    torch.save(G_new.state_dict(), f'generators_saved/{text_prompt}_{loss_type_}_generator.pt')
+
+    # print(loss)
+    # print(min(loss))
+    
+    with open(f'weight_transform_{text_prompt}_{loss_type_}_train_val_loss.pickle', 'wb') as f:
+        pickle.dump({'train': train_loss, 'val': val_loss}, f)
+
+    # with open('weight_transform_grads_2.pickle', 'wb') as f:
+    #     pickle.dump(grads, f)
 
     result = []
 
-    with torch.no_grad():
-        G_new.eval()
-        img_original = eval_get3d_single(G_ema, z, tex_z, torch.ones(1, device='cuda')).cpu()
-        img_edited = eval_get3d_single(G_new, z, tex_z, torch.ones(1, device='cuda')).cpu()
-        result.append({'Original': img_original, 'Edited': img_edited, 'Loss': loss, 'Edited Images': edited_images})
-    # with open(f'weight_transform_results/output_img_{random_seed}_{lmbda_1}_{lmbda_2}_{text_prompt}_{n_epochs}_{time.time()}.pickle', 'wb') as f:
-    #     pickle.dump(result, f)
-    snapshot_data = dict(
-                G=G_ema, G_ema=G_ema)
-    all_model_dict = {'G': snapshot_data['G'].state_dict(), 'G_ema': snapshot_data['G_ema'].state_dict()}
-    torch.save(all_model_dict, f'{text_prompt}_{loss_type_}')
+    # with torch.no_grad():
+    #     G_new.eval()
+    #     img_original = eval_get3d_single(G_ema, z, tex_z, torch.ones(1, device='cuda')).cpu()
+    #     img_edited = eval_get3d_single(G_new, z, tex_z, torch.ones(1, device='cuda')).cpu()
+    #     result.append({'Original': img_original, 'Edited': img_edited, 'Loss': loss, 'Edited Images': edited_images})
+    # # with open(f'weight_transform_results/output_img_{random_seed}_{lmbda_1}_{lmbda_2}_{text_prompt}_{n_epochs}_{time.time()}.pickle', 'wb') as f:
+    # #     pickle.dump(result, f)
+    # snapshot_data = dict(
+    #             G=G_ema, G_ema=G_ema)
+    # all_model_dict = {'G': snapshot_data['G'].state_dict(), 'G_ema': snapshot_data['G_ema'].state_dict()}
+    # torch.save(all_model_dict, f'{text_prompt}_{loss_type_}')
     
     

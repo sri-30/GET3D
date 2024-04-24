@@ -80,19 +80,11 @@ class LatentMapper(torch.nn.Module):
         return ws_geo + add_geo, ws_tex
         #return ws_geo + torch.cat([self.geo_mapper[i](ws_geo[:,self.geo_mapper_nums[i-1]:num]) for i, num in enumerate(self.geo_mapper_nums[1:])], dim=1), ws_tex + self.tex_mapper(ws_tex)
 
-def train_eval(G, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, intermediate_space=False, loss_type = 'global', corpus_type='body_type'):
-    camera_list = generate_rotate_camera_list()
-    camera_list = [camera_list[4]]
+def train_eval(G, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, intermediate_space=False, loss_type = 'global'):
+    camera_list = generate_rotate_camera_list()[::4]
+    # camera_list = [camera_list[4]]
     
     g_ema = copy.deepcopy(G).eval()
-
-    if corpus_type == 'body_type':
-        corpus = ['Sports Car', 'SUV', 'Hatchback', 'Sedan']
-    elif corpus_type == 'textures':
-        corpus = ["Paint", "Glass", "Chrome", "Rubber", "Leather", "Plastic", "Carbon Fiber", "Fabric", "Metal", "Rust", "Dirt", "Decal", "Reflective Surfaces", "Ice", "Wood", "Neon", "Matte Black", "Carbon Ceramic"]
-    else:
-        raise NotImplementedError
-
 
     clip_loss = CLIPLoss(source_text='car', target_text=text_prompt, corpus=['Sports Car', 'SUV', 'Hatchback', 'Sedan'], aux_string='')
 
@@ -123,24 +115,15 @@ def train_eval(G, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, inter
     # writer.add_graph(latent_mapper, (validation_geo[0].unsqueeze(0), validation_tex[0].unsqueeze(0)))
     # writer.close()
 
-    # init_optim = torch.optim.SGD(latent_mapper.parameters(), lr=1e-3)
-
-    # for _ in range(100):
-    #     with torch.no_grad():
-    #             z_geo = torch.randn(5, G.z_dim, device='cuda')
-    #             z_tex = torch.randn(5, G.z_dim, device='cuda')
-    #             ws_geo = g_ema.mapping_geo(z_geo, torch.ones(1, device='cuda'), update_emas=False, truncation_psi=0.7)
-    #             ws_tex = g_ema.mapping(z_tex, torch.ones(1, device='cuda'), update_emas=False, truncation_psi=0.7)
-    #     ws_geo_edited, ws_tex_edited = latent_mapper(ws_geo, ws_tex)
-    #     loss = ((ws_geo_edited - ws_geo) ** 2).sum() + ((ws_tex_edited - ws_tex) ** 2).sum()
-    #     loss.backward()
-    #     init_optim.step()
-    #     init_optim.zero_grad()
-
+    # with torch.profiler.profile(
+    #         schedule=torch.profiler.schedule(wait=3, warmup=3, active=3, repeat=1),
+    #         on_trace_ready=torch.profiler.tensorboard_trace_handler('./runs/latent_mapper_mem_usage/'),
+    #         record_shapes=True,
+    #         with_stack=True) as prof:
     for i in range(n_epochs):
         print(f'Epoch: {i}')
-        
         for j in range(len(z_geo_split)):
+            #prof.step()
             print(f'Batch: {j}')
             loss_log = 0
             loss_geo_log = 0
@@ -159,8 +142,6 @@ def train_eval(G, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, inter
 
                     output_original = eval_get3d_angles(g_ema,  ws_geo, ws_tex, cameras=cameras,  intermediate_space=True)
 
-                # ws_geo.requires_grad_(True)
-                # ws_tex.requires_grad_(True)
                 ws_geo_edited, ws_tex_edited = latent_mapper(ws_geo, ws_tex)
 
                 output_edited = eval_get3d_angles(g_ema, ws_geo_edited, ws_tex_edited,
@@ -187,14 +168,6 @@ def train_eval(G, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, inter
                     loss_log += loss_clip.item()
                     loss_geo_log += loss_geo.item()
                     loss_tex_log += loss_tex.item()
-            
-            # for param in latent_mapper.parameters():
-            #     print(param.grad.norm())
-
-            # for param in latent_mapper.parameters():
-            #     if not (param.grad is None):
-            #         # print(param.grad.norm())
-            #         torch.nn.utils.clip_grad_norm_(param.grad.norm(), 0.05)
 
             torch.nn.utils.clip_grad_norm_(latent_mapper.parameters(), 0.1)
 
@@ -202,7 +175,6 @@ def train_eval(G, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, inter
             z_optim.step()
             z_optim.zero_grad()
             torch.cuda.empty_cache()
-            # print(loss_geo_log/len(z_geo_split[j]))
             with torch.no_grad():
                 
                 val_ws_geo = g_ema.mapping_geo(validation_geo, torch.ones(1, device='cuda'), update_emas=False, truncation_psi=0.7)
@@ -229,7 +201,7 @@ def train_eval(G, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, inter
                     raise NotImplementedError
 
                 metrics_save['Training CLIP Loss'].append(loss_log / len(z_geo_split[j]))
-                metrics_save['Validation CLIP Loss'].append(loss_.item())
+                metrics_save['Validation CLIP Loss'].append(loss_.item() / n_val)
                 
                 metrics_save['Geo Loss'].append(loss_geo_log / len(z_geo_split[j]))
                 metrics_save['Tex Loss'].append(loss_tex_log / len(z_geo_split[j]))
@@ -239,28 +211,26 @@ def train_eval(G, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, inter
 if __name__ == "__main__":
     import sys
 
-    print(sys.argv)
     _, random_seed_, text_prompt_, loss_type_, lmbda_1_, lmbda_2_ = sys.argv
 
-    with open('test.pickle', 'rb') as f:
-        c = pickle.load(f)
+    with open('params.pickle', 'rb') as f:
+        g_ema_params = pickle.load(f)
     
-    G_ema = constructGenerator(**c)
+    G_ema = constructGenerator(**g_ema_params)
 
     # Parameters
     random_seed = int(random_seed_)
     lmbda_1 = float(lmbda_1_)
     lmbda_2 = float(lmbda_2_)
     text_prompt= text_prompt_
-    n_epochs = 10
+    n_epochs = 1
     intermediate_space=True
 
     torch.manual_seed(random_seed)
-
     mapper, metrics_save = train_eval(G_ema, text_prompt, n_epochs=n_epochs, lmbda_1=lmbda_1, lmbda_2=lmbda_2, intermediate_space=intermediate_space, loss_type=loss_type_)
+    
+    torch.save(mapper, f'latent_mapper_saved/foo_{text_prompt}_{loss_type_}_mapper.pt')
 
-    torch.save(mapper, f'latent_mapper_saved/{text_prompt}_{loss_type_}_mapper.pt')
-
-    with open(f'latent_mapper_{text_prompt}_{loss_type_}_metrics.pickle', 'wb') as f:
+    with open(f'metrics/foo_latent_mapper_{text_prompt}_{loss_type_}_metrics.pickle', 'wb') as f:
         pickle.dump(metrics_save, f)
 

@@ -61,6 +61,8 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
 
     z_optim = torch.optim.Adam([latent_geo, latent_tex], lr=learning_rate, betas=(0.9, 0.99))
 
+    metrics_save = {f'{loss_type} Loss': [], 'Geo Loss': [], 'Tex Loss': []}
+
     for i in range(n_epochs):
         print(i)
 
@@ -108,7 +110,7 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
         # Backpropagation
         loss.backward()
 
-        writer.add_scalar("Loss/train", loss, i)
+        #writer.add_scalar("Loss/train", loss, i)
 
         # Update Optimizer
         z_optim.step()
@@ -119,7 +121,10 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
                 min_loss = loss.item()
                 min_latent = (latent_geo.detach().cpu(), latent_tex.detach().cpu())
 
-            res_loss.append((loss.item(), loss_geo.item(), loss_clip.item()))
+            #metrics_save['Training CLIP Loss'].append(loss.item())
+            metrics_save[f'{loss_type} Loss'].append(loss_clip.item())
+            metrics_save['Geo Loss'].append(((latent_geo - data_geo) ** 2).mean().item())
+            metrics_save['Tex Loss'].append(((latent_tex - data_tex) ** 2).mean().item())
 
             if i % n_save == 0:
                 cur_output = output_edited.detach().clone()
@@ -127,9 +132,9 @@ def train_eval(G, data_geo_z, data_tex_z, text_prompt, n_epochs=5, lmbda_1=0.001
 
             edited_latents.append((latent_geo.detach().cpu(), latent_tex.detach().cpu()))
     if intermediate_space:
-        return original_latents, edited_latents, res_loss, (min_latent[0].unsqueeze(0).repeat(1, 22, 1), min_latent[1].unsqueeze(0).repeat(1, 9, 1)), edited_images
+        return original_latents, edited_latents, metrics_save, (min_latent[0].unsqueeze(0).repeat(1, 22, 1), min_latent[1].unsqueeze(0).repeat(1, 9, 1)), edited_images
     else:
-        return original_latents, edited_latents, res_loss, min_latent, edited_images
+        return original_latents, edited_latents, metrics_save, min_latent, edited_images
 
 if __name__ == "__main__":
     import sys
@@ -141,6 +146,8 @@ if __name__ == "__main__":
         c = pickle.load(f)
     
     G_ema = constructGenerator(**c)
+    
+    torch.manual_seed(0)
 
     # Parameters
     random_seed = int(random_seed_)
@@ -150,17 +157,19 @@ if __name__ == "__main__":
     n_epochs = 100
     intermediate_space=True
 
-    torch.manual_seed(random_seed)
+    
 
     z = torch.randn([1, 512], device='cuda')  # random code for geometry
     tex_z = torch.randn([1, 512], device='cuda')  # random code for texture
 
-    original, edited, loss, min_latent, edited_images = train_eval(G_ema, z, tex_z, text_prompt, n_epochs=n_epochs, lmbda_1=lmbda_1, lmbda_2=lmbda_2, intermediate_space=intermediate_space, loss_type=loss_type_)
+    original, edited, metrics_save, min_latent, edited_images = train_eval(G_ema, z, tex_z, text_prompt, n_epochs=n_epochs, lmbda_1=lmbda_1, lmbda_2=lmbda_2, intermediate_space=intermediate_space, loss_type=loss_type_)
 
     writer.close()
 
-    print(loss)
-    print(min(loss))
+    print(metrics_save)
+
+    with open(f'latent_optimization_{text_prompt}_{loss_type_}_train_val_loss.pickle', 'wb') as f:
+        pickle.dump(metrics_save, f)
 
     result = []
 
@@ -169,13 +178,13 @@ if __name__ == "__main__":
         cameras = generate_rotate_camera_list()
         img_original = eval_get3d_angles(G_ema, original[0].to('cuda'), original[1].to('cuda'), cameras=cameras, intermediate_space=intermediate_space).cpu()
         img_edited = eval_get3d_angles(G_ema, min_latent[0].to('cuda'), min_latent[1].to('cuda'), cameras=cameras, intermediate_space=intermediate_space).cpu()
-        save_textured_mesh(G_ema, original[0].to('cuda'), original[1].to('cuda'), f'meshes_saved/output_{random_seed}_original.obj')
-        save_textured_mesh(G_ema, min_latent[0].to('cuda'), min_latent[1].to('cuda'), f'meshes_saved/output_{random_seed}_{text_prompt_}_{loss_type_}.obj')
+        #save_textured_mesh(G_ema, original[0].to('cuda'), original[1].to('cuda'), f'meshes_saved/output_{random_seed}_original.obj')
+        #save_textured_mesh(G_ema, min_latent[0].to('cuda'), min_latent[1].to('cuda'), f'meshes_saved/output_{random_seed}_{text_prompt_}_{loss_type_}.obj')
         # result.append({'Original': img_original, 'Edited': img_edited, 'Loss': loss, 'Original Latent': original, 'Edited Latent': min_latent, 'Edited Images': edited_images})
     # with open(f'latent_transform_adam_results_pae/output_img_{random_seed}_{lmbda_1}_{lmbda_2}_{text_prompt}_{n_epochs}_{time.time()}.pickle', 'wb') as f:
     #     pickle.dump(result, f)
     
-    images_latents = {'Original Image': img_original, 'Edited Image': img_edited, 'Original Latent': original, 'Edited Latent': min_latent, 'Loss': loss}
-    with open(f'latents_saved/output_{random_seed}_{text_prompt}_{loss_type_}.pickle', 'wb') as f:
-        pickle.dump(images_latents, f)
+    # images_latents = {'Original Image': img_original, 'Edited Image': img_edited, 'Original Latent': original, 'Edited Latent': min_latent, 'Loss': loss}
+    # with open(f'latents_saved/output_{random_seed}_{text_prompt}_{loss_type_}.pickle', 'wb') as f:
+    #     pickle.dump(images_latents, f)
     

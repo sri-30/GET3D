@@ -339,34 +339,33 @@ def generate_img_layer(
     return img, None
 
 def generate_rotate_camera_list(n_batch=1):
-        '''
-        Generate a camera list for rotating the object.
-        :param n_batch:
-        :return:
-        '''
-        n_camera = 24
-        camera_radius = 1.2  # align with what ww did in blender
-        camera_r = torch.zeros(n_camera, 1, device='cuda') + camera_radius
-        camera_phi = torch.zeros(n_camera, 1, device='cuda') + (90.0 - 15.0) / 90.0 * 0.5 * math.pi
-        camera_theta = torch.range(0, n_camera - 1, device='cuda').unsqueeze(dim=-1) / n_camera * math.pi * 2.0
-        camera_theta = -camera_theta
-        world2cam_matrix, camera_origin, _, _, _ = create_camera_from_angle(
-            camera_phi, camera_theta, camera_r, device='cuda')
-        camera_list = [world2cam_matrix[i:i + 1].expand(n_batch, -1, -1).unsqueeze(dim=1) for i in range(n_camera)]
-        return camera_list
+    '''
+    Generate a camera list for rotating the object.
+    :param n_batch:
+    :return:
+    '''
+    n_camera = 24
+    camera_radius = 1.2  # align with what ww did in blender
+    camera_r = torch.zeros(n_camera, 1, device='cuda') + camera_radius
+    camera_phi = torch.zeros(n_camera, 1, device='cuda') + (90.0 - 15.0) / 90.0 * 0.5 * math.pi
+    camera_theta = torch.range(0, n_camera - 1, device='cuda').unsqueeze(dim=-1) / n_camera * math.pi * 2.0
+    camera_theta = -camera_theta
+    world2cam_matrix, camera_origin, _, _, _ = create_camera_from_angle(
+        camera_phi, camera_theta, camera_r, device='cuda')
+    camera_list = [world2cam_matrix[i:i + 1].expand(n_batch, -1, -1).unsqueeze(dim=1) for i in range(n_camera)]
+    return camera_list
 
 def generate_random_camera(batch_size, n_views=2):
-        '''
-        Sample a random camera from the camera distribution during training
-        :param batch_size: batch size for the generator
-        :param n_views: number of views for each shape within a batch
-        :return:
-        '''
-        sample_r = None
-        world2cam_matrix, forward_vector, camera_origin, rotation_angle, elevation_angle = sample_camera(
-            'shapenet_car', batch_size * n_views, 'cuda')
-        mv_batch = world2cam_matrix
-        return mv_batch.reshape(batch_size, n_views, 4, 4)
+    '''
+    Sample a random camera from the camera distribution during training
+    :param batch_size: batch size for the generator
+    :param n_views: number of views for each shape within a batch
+    :return:
+    '''
+    world2cam_matrix, _, _, _, _ = sample_camera(
+        'shapenet_car', batch_size * n_views, 'cuda')
+    mv_batch = world2cam_matrix
+    return mv_batch.reshape(batch_size, n_views, 4, 4)
 
 def save_textured_mesh(G_ema, ws_geo, ws_tex, filename='default'):
     import PIL
@@ -399,174 +398,56 @@ def eval_get3d_angles(G_ema, z_geo, z_tex, cameras=[], intermediate_space=False)
     else:
         ws_geo = G_ema.mapping_geo(z_geo, c=torch.ones(1, device='cuda'), truncation_psi=0.7, update_emas=False)
         ws = G_ema.mapping(z_tex, c=torch.ones(1, device='cuda'), truncation_psi=0.7, update_emas=False)
-    # -------------------      generate    ------------------- #
 
-    # (1) Generate 3D mesh first
-    # NOTE :
-    # this code is shared by 'def generate' and 'def extract_3d_mesh'
+    # Generate textured mesh
     syn = G_ema.synthesis
-    if syn.one_3d_generator:
-        sdf_feature, tex_feature = syn.generator.get_feature(
-            ws[:, :syn.generator.tri_plane_synthesis.num_ws_tex],
-            ws_geo[:, :syn.generator.tri_plane_synthesis.num_ws_geo])
-        ws = ws[:, syn.generator.tri_plane_synthesis.num_ws_tex:]
-        ws_geo = ws_geo[:, syn.generator.tri_plane_synthesis.num_ws_geo:]
-        mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = syn.get_geometry_prediction(ws_geo, sdf_feature)
-    else:
-        mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = syn.get_geometry_prediction(ws_geo)
+    sdf_feature, tex_feature = syn.generator.get_feature(
+        ws[:, :syn.generator.tri_plane_synthesis.num_ws_tex],
+        ws_geo[:, :syn.generator.tri_plane_synthesis.num_ws_geo])
+    ws = ws[:, syn.generator.tri_plane_synthesis.num_ws_tex:]
+    ws_geo = ws_geo[:, syn.generator.tri_plane_synthesis.num_ws_geo:]
+    mesh_v, mesh_f, _, _, _, _ = syn.get_geometry_prediction(ws_geo, sdf_feature)
 
     ws_tex = ws
-
-    # NOTE
-    # tex_pos: Position we want to query the texture field || List[(1,1024, 1024,3) * Batch]
-    # tex_hard_mask = 2D silhoueete of the rendered image  || Tensor(Batch, 1024, 1024, 1)
 
     antilias_mask = []
     tex_pos = []
     tex_hard_mask = []
-    return_value = {'tex_pos': []}
+    tex_pos = []
 
-    for i, cam in enumerate(cameras):
+    # Render the mesh
+    for cam in cameras:
         antilias_mask_, hard_mask_, return_value_ = syn.render_mesh(mesh_v, mesh_f, cam.repeat(z_geo.shape[0], 1, 1, 1))
         antilias_mask.append(antilias_mask_)
         tex_hard_mask.append(hard_mask_)
 
         for pos in return_value_['tex_pos']:
-            return_value['tex_pos'].append(pos)
+            tex_pos.append(pos)
 
-    antilias_mask = torch.cat(antilias_mask, dim=0)  # (B*n_view, 1024, 1024, 1)
-    tex_hard_mask = torch.cat(tex_hard_mask, dim=0)  # (B*n_view, 1024, 1024, 3)
-    tex_pos = return_value['tex_pos']
+    antilias_mask = torch.cat(antilias_mask, dim=0)
+    tex_hard_mask = torch.cat(tex_hard_mask, dim=0)
 
     ws_tex = ws_tex.repeat(len(cameras), 1, 1)
     ws_geo = ws_geo.repeat(len(cameras), 1, 1)
     tex_feature = tex_feature.repeat(len(cameras), 1, 1, 1)
 
-    # (4) Querying the texture field to predict the texture feature for each pixel on the image
-    if syn.one_3d_generator:
-        tex_feat = syn.get_texture_prediction(ws_tex, tex_pos, ws_geo.detach(), tex_hard_mask, tex_feature)
-    else:
-        tex_feat = syn.get_texture_prediction(
-            ws_tex, tex_pos, ws_geo.detach(), tex_hard_mask)
+    tex_feat = syn.get_texture_prediction(ws_tex, tex_pos, ws_geo.detach(), tex_hard_mask, tex_feature)
+
     background_feature = torch.zeros_like(tex_feat)
 
-    # (5) Merge them together
     img_feat = tex_feat * tex_hard_mask + background_feature * (1 - tex_hard_mask)
 
-    # NOTE : debug -> no need to execute (6)
-    # (6) We should split it back to the original image shape
-
-    ws_list = [ws_tex[i].unsqueeze(dim=0).expand(return_value['tex_pos'][i].shape[0], -1, -1) for i in
-               range(len(return_value['tex_pos']))]
+    ws_list = [ws_tex[i].unsqueeze(dim=0).expand(tex_pos[i].shape[0], -1, -1) for i in
+               range(len(tex_pos))]
     ws = torch.cat(ws_list, dim=0).contiguous()
 
-    # (7) Predict the RGB color for each pixel (syn.to_rgb is 1x1 convolution)
-    if syn.feat_channel > 3:
-        network_out = syn.to_rgb(img_feat.permute(0, 3, 1, 2), ws[:, -1])
-    else:
-        network_out = img_feat.permute(0, 3, 1, 2)
+    network_out = syn.to_rgb(img_feat.permute(0, 3, 1, 2), ws[:, -1])
 
     img = network_out
 
     img = img[:, :3]
 
     return img
-
-def eval_nada_z(G_ema, G_ema_frozen, z_geo, z_tex, n_cameras=2):
-    ws_geo = G_ema.mapping_geo(z_geo, c=0)
-    ws_tex = G_ema.mapping(z_tex, c=0)
-    return eval_nada(G_ema, G_ema_frozen, ws_tex, ws_geo, n_cameras=n_cameras)
-
-def eval_nada(
-        G_ema,
-        G_ema_frozen,
-        ws,
-        ws_geo,
-        texture_resolution=2048,
-        n_cameras=2
-):
-
-    # -------------------      generate    ------------------- #
-
-    # (1) Generate 3D mesh first
-    # NOTE :
-    # this code is shared by 'def generate' and 'def extract_3d_mesh'
-    syn = G_ema.synthesis
-    if syn.one_3d_generator:
-        sdf_feature, tex_feature = syn.generator.get_feature(
-            ws[:, :syn.generator.tri_plane_synthesis.num_ws_tex],
-            ws_geo[:, :syn.generator.tri_plane_synthesis.num_ws_geo])
-        ws = ws[:, syn.generator.tri_plane_synthesis.num_ws_tex:]
-        ws_geo = ws_geo[:, syn.generator.tri_plane_synthesis.num_ws_geo:]
-        mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = syn.get_geometry_prediction(ws_geo, sdf_feature)
-    else:
-        mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = syn.get_geometry_prediction(ws_geo)
-
-    ws_tex = ws
-
-    # (2) Generate random camera
-    with torch.no_grad():
-        campos, cam_mv, rotation_angle, elevation_angle, sample_r = G_ema_frozen.synthesis.generate_random_camera(
-            ws_tex.shape[0], n_views=n_cameras)
-        gen_camera = (campos, cam_mv, sample_r, rotation_angle, elevation_angle)
-        run_n_view = n_cameras
-
-    # NOTE
-    # tex_pos: Position we want to query the texture field || List[(1,1024, 1024,3) * Batch]
-    # tex_hard_mask = 2D silhoueete of the rendered image  || Tensor(Batch, 1024, 1024, 1)
-
-    antilias_mask = []
-    tex_pos = []
-    tex_hard_mask = []
-    return_value = {'tex_pos': []}
-
-    for idx in range(n_cameras):
-        cam = cam_mv[:, idx, :, :].unsqueeze(1)
-        antilias_mask_, hard_mask_, return_value_ = syn.render_mesh(mesh_v, mesh_f, cam)
-        antilias_mask.append(antilias_mask_)
-        tex_hard_mask.append(hard_mask_)
-
-        for pos in return_value_['tex_pos']:
-            return_value['tex_pos'].append(pos)
-
-    antilias_mask = torch.cat(antilias_mask, dim=0)  # (B*n_view, 1024, 1024, 1)
-    tex_hard_mask = torch.cat(tex_hard_mask, dim=0)  # (B*n_view, 1024, 1024, 3)
-    tex_pos = return_value['tex_pos']
-
-    ws_tex = ws_tex.repeat(n_cameras, 1, 1)
-    ws_geo = ws_geo.repeat(n_cameras, 1, 1)
-    tex_feature = tex_feature.repeat(n_cameras, 1, 1, 1)
-
-    # (4) Querying the texture field to predict the texture feature for each pixel on the image
-    if syn.one_3d_generator:
-        tex_feat = syn.get_texture_prediction(ws_tex, tex_pos, ws_geo.detach(), tex_hard_mask, tex_feature)
-    else:
-        tex_feat = syn.get_texture_prediction(
-            ws_tex, tex_pos, ws_geo.detach(), tex_hard_mask)
-    background_feature = torch.zeros_like(tex_feat)
-
-    # (5) Merge them together
-    img_feat = tex_feat * tex_hard_mask + background_feature * (1 - tex_hard_mask)
-
-    # NOTE : debug -> no need to execute (6)
-    # (6) We should split it back to the original image shape
-
-    ws_list = [ws_tex[i].unsqueeze(dim=0).expand(return_value['tex_pos'][i].shape[0], -1, -1) for i in
-               range(len(return_value['tex_pos']))]
-    ws = torch.cat(ws_list, dim=0).contiguous()
-
-    # (7) Predict the RGB color for each pixel (syn.to_rgb is 1x1 convolution)
-    if syn.feat_channel > 3:
-        network_out = syn.to_rgb(img_feat.permute(0, 3, 1, 2), ws[:, -1])
-    else:
-        network_out = img_feat.permute(0, 3, 1, 2)
-
-    img = network_out
-
-    img = img[:, :3]
-
-    return_generate = [img, antilias_mask]
-    return return_generate[0]
 
 def eval_get3d_weights(G_ema, geo_z, tex_z, grid_c):
     # Step 1: Map the sampled z code to w-space

@@ -14,3 +14,11 @@ generators_saved
 latent_mapper_saved
 eval_meshes
 metrics_saved
+opt_meshes_saved
+out_of_domain_examples
+saved_generators
+extra_meshes
+eval_meshes_sports_car
+ablation
+.ipynb_checkpoints
+latent_opt_meshes_saved

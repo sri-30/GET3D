@@ -53,73 +53,11 @@ def constructGenerator(
         c_dim=0, img_resolution=training_set_kwargs['resolution'] if 'resolution' in training_set_kwargs else 1024, img_channels=3)
     G_kwargs['device'] = device
 
-    G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(True).to(
-        device)  # subclass of torch.nn.Module
-    # D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
-    #     device)  # subclass of torch.nn.Module
-    G_ema = copy.deepcopy(G).eval()  # deepcopy can make sure they are correct.
-    if resume_pretrain is not None and (rank == 0):
-        print('==> resume from pretrained path %s' % (resume_pretrain))
-        model_state_dict = torch.load(resume_pretrain, map_location=device)
-        G.load_state_dict(model_state_dict['G'], strict=True)
-        G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
-        # D.load_state_dict(model_state_dict['D'], strict=True)
+    G_ema= dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(True).to(
+        device)
+    model_state_dict = torch.load(resume_pretrain, map_location=device)
+    G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
     return G_ema
-
-def eval_get3d(G_ema, grid_z, grid_tex_z, grid_c):
-    G_ema.update_w_avg()
-    camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_z[0].shape[0])
-    if grid_tex_z is None:
-        grid_tex_z = grid_z
-    for i_camera, camera in enumerate(camera_list):
-        images_list = []
-        for z, geo_z, c in zip(grid_tex_z, grid_z, grid_c):
-            print(z)
-            img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
-                z=z, geo_z=geo_z, c=c, noise_mode='const',
-                generate_no_light=True, truncation_psi=0.7, camera=camera)
-            rgb_img = img[:, :3]
-            save_img = rgb_img.detach()
-            images_list.append(save_img.cpu().numpy())
-    images = np.concatenate(images_list, axis=0)
-    return images
-
-def eval_get3d_tensor(G_ema, grid_z, grid_tex_z, grid_c):
-    G_ema.update_w_avg()
-    camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_z[0].shape[0])
-    camera = camera_list[4]
-    output_tensor = None
-    for i, _ in enumerate(grid_z):
-        geo_z = grid_z[i]
-        tex_z = grid_tex_z[i]
-        img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
-            z=tex_z, geo_z=geo_z, c=grid_c, noise_mode='const',
-            generate_no_light=True, truncation_psi=0.7, camera=camera)
-        rgb_img = img[:, :3]
-        if output_tensor is None:
-            output_tensor = torch.cat((rgb_img, ))
-        else:
-            output_tensor = torch.cat((output_tensor, rgb_img))
-    return output_tensor
-
-def eval_get3d_single(G_ema, geo_z, tex_z, grid_c):
-    camera_list = G_ema.synthesis.generate_rotate_camera_list()
-    camera = camera_list[4]
-    img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
-        z=tex_z, geo_z=geo_z, c=grid_c, noise_mode='const',
-        generate_no_light=True, truncation_psi=0.7, camera=camera)
-    rgb_img = img[:, :3]
-    return rgb_img
-
-
-def eval_get3d_weights_ws(G_ema, ws_geo, ws, grid_c):
-    with torch.no_grad():
-        camera_list = G_ema.synthesis.generate_rotate_camera_list()
-        camera = camera_list[4]
-    img, syn_camera, mask_pyramid, sdf_reg_loss, render_return_value = G_ema.synthesis(
-        ws, return_shape=False,
-        ws_geo=ws_geo, camera=camera)
-    return img[:, :3]
 
 def get_all_generator_layers_dict(g_ema):
 
@@ -158,8 +96,13 @@ def get_all_generator_layers_dict(g_ema):
 
     return layer_idx_tex, layer_idx_geo
 
-def freeze_generator_layers(g_ema):
-    g_ema.synthesis.requires_grad_(False)
+def freeze_generator_layers(g_ema, layer_list=None):
+    if layer_list is None:
+        g_ema.synthesis.requires_grad_(False)
+    else:
+        for layer in layer_list:
+            layer.requires_grad_(True)
+            
 
 def unfreeze_generator_layers(g_ema, topk_idx_tex: list, topk_idx_geo: list):
     """
@@ -260,83 +203,6 @@ def determine_opt_layers(g_frozen, g_train, clip_loss, n_batch=8, epochs=1, k=20
     torch.cuda.empty_cache()
 
     return chosen_layer_idx_tex, chosen_layer_idx_geo
-
-def generate_img_layer(
-    G_ema,
-    ws,
-    ws_geo,
-    cam_mv=None
-):
-    syn = G_ema.synthesis
-    # (1) Generate 3D mesh first
-    # NOTE :
-    # this code is shared by 'def generate' and 'def extract_3d_mesh'
-    if syn.one_3d_generator:
-        sdf_feature, tex_feature = syn.generator.get_feature(
-            ws[:, :syn.generator.tri_plane_synthesis.num_ws_tex],
-            ws_geo[:, :syn.generator.tri_plane_synthesis.num_ws_geo])
-        ws = ws[:, syn.generator.tri_plane_synthesis.num_ws_tex:]
-        ws_geo = ws_geo[:, syn.generator.tri_plane_synthesis.num_ws_geo:]
-        mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = syn.get_geometry_prediction(ws_geo, sdf_feature)
-    else:
-        mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = syn.get_geometry_prediction(ws_geo)
-
-    ws_tex = ws
-
-    # (2) Generate random camera
-    with torch.no_grad():
-        if cam_mv is None:
-            campos, cam_mv, rotation_angle, elevation_angle, sample_r = syn.generate_random_camera(
-                ws_tex.shape[0], n_views=1)
-            gen_camera = (campos, cam_mv, sample_r, rotation_angle, elevation_angle)
-        run_n_view = 1
-
-    # NOTE
-    # tex_pos: Position we want to query the texture field || List[(1,1024, 1024,3) * Batch]
-    # tex_hard_mask = 2D silhoueete of the rendered image  || Tensor(Batch, 1024, 1024, 1)
-
-    # (3) Render the mesh into 2D image (get 3d position of each image plane)
-    antilias_mask, hard_mask, return_value = syn.render_mesh(mesh_v, mesh_f, cam_mv)
-
-    tex_pos = return_value['tex_pos']
-    tex_hard_mask = hard_mask
-
-    tex_pos = [torch.cat([pos[i_view:i_view + 1] for i_view in range(run_n_view)], dim=2) for pos in tex_pos]
-    tex_hard_mask = torch.cat(
-        [torch.cat(
-            [tex_hard_mask[i * run_n_view + i_view: i * run_n_view + i_view + 1]
-                for i_view in range(run_n_view)], dim=2)
-            for i in range(ws_tex.shape[0])], dim=0)
-
-    # (4) Querying the texture field to predict the texture feature for each pixel on the image
-    if syn.one_3d_generator:
-        tex_feat = syn.get_texture_prediction(ws_tex, tex_pos, ws_geo.detach(), tex_hard_mask, tex_feature)
-    else:
-        tex_feat = syn.get_texture_prediction(
-            ws_tex, tex_pos, ws_geo.detach(), tex_hard_mask)
-    background_feature = torch.zeros_like(tex_feat)
-
-    # (5) Merge them together
-    img_feat = tex_feat * tex_hard_mask + background_feature * (1 - tex_hard_mask)
-
-    # NOTE : debug -> no need to execute (6)
-    # (6) We should split it back to the original image shape
-
-    ws_list = [ws_tex[i].unsqueeze(dim=0).expand(return_value['tex_pos'][i].shape[0], -1, -1) for i in
-               range(len(return_value['tex_pos']))]
-    ws = torch.cat(ws_list, dim=0).contiguous()
-
-    # (7) Predict the RGB color for each pixel (syn.to_rgb is 1x1 convolution)
-    if syn.feat_channel > 3:
-        network_out = syn.to_rgb(img_feat.permute(0, 3, 1, 2), ws[:, -1])
-    else:
-        network_out = img_feat.permute(0, 3, 1, 2)
-
-    img = network_out
-
-    img = img[:, :3]
-
-    return img, None
 
 def generate_rotate_camera_list(n_batch=1):
     '''
@@ -448,47 +314,3 @@ def eval_get3d_angles(G_ema, z_geo, z_tex, cameras=[], intermediate_space=False)
     img = img[:, :3]
 
     return img
-
-def eval_get3d_weights(G_ema, geo_z, tex_z, grid_c):
-    # Step 1: Map the sampled z code to w-space
-    ws = G_ema.mapping(tex_z, grid_c, update_emas=False)
-    # geo_z = torch.randn_like(z)
-    ws_geo = G_ema.mapping_geo(
-        geo_z, grid_c,
-        update_emas=False)
-
-    # # # Step 2: Apply style mixing to the latent code
-    # if self.style_mixing_prob > 0:
-    #     cutoff = torch.empty([], dtype=torch.int64, device=ws.device).random_(1, ws.shape[1])
-    #     cutoff = torch.where(
-    #         torch.rand([], device=ws.device) < self.style_mixing_prob, cutoff,
-    #         torch.full_like(cutoff, ws.shape[1]))
-    #     ws[:, cutoff:] = self.G.mapping(torch.randn_like(z), c, update_emas=False)[:, cutoff:]
-
-    #     cutoff = torch.empty([], dtype=torch.int64, device=ws_geo.device).random_(1, ws_geo.shape[1])
-    #     cutoff = torch.where(
-    #         torch.rand([], device=ws_geo.device) < self.style_mixing_prob, cutoff,
-    #         torch.full_like(cutoff, ws_geo.shape[1]))
-    #     ws_geo[:, cutoff:] = self.G.mapping_geo(torch.randn_like(z), c, update_emas=False)[:, cutoff:]
-
-    # Step 3: Generate rendered image of 3D generated shapes.
-    with torch.no_grad():
-        camera_list = G_ema.synthesis.generate_rotate_camera_list()
-        camera = camera_list[4]
-    img, syn_camera, mask_pyramid, sdf_reg_loss, render_return_value = G_ema.synthesis(
-        ws, return_shape=False,
-        ws_geo=ws_geo, camera=camera)
-    return img[:, :3]
-
-def eval_get3d_single_intermediates(G_ema, ws_geo, ws_tex, grid_c):
-    camera_list = G_ema.synthesis.generate_rotate_camera_list()
-    camera = camera_list[4]
-    img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d_intermediate(
-        ws_geo=ws_geo, ws=ws_tex, c=grid_c, noise_mode='const',
-        generate_no_light=True, truncation_psi=0.7, camera=camera)
-    rgb_img = img[:, :3]
-    return rgb_img
-
-def intermediates(G_ema, geo_z, tex_z, grid_c):
-    G_ema.update_w_avg()
-    return G_ema.get_intermediates(geo_z, tex_z, grid_c)

@@ -34,7 +34,7 @@ def train_eval(G, text_prompt, n_epochs=5, loss_type='global', clip_grad_norm=No
     g_ema_train.train()
 
     learning_rate = 5e-4
-    opt_params = g_ema_train.synthesis.generator.tri_plane_synthesis.parameters()
+    opt_params = g_ema_train.synthesis.generator.parameters()
     optimizer = torch.optim.Adam(opt_params, 
                                 lr=learning_rate,
                                 betas=(0.9, 0.99))
@@ -154,8 +154,8 @@ if __name__ == "__main__":
     # Parameters
     random_seed = random_seed_
     text_prompt= text_prompt_
-    n_epochs = 1
-    n_samp = 15
+    n_epochs = 10
+    n_samp = 90
 
     camera_num = 7
 

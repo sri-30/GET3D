@@ -6,10 +6,7 @@ import time
 
 from clip_utils.clip_loss_nada import CLIPLoss
 from training_utils.training_utils import get_lr
-from get3d_utils import constructGenerator, save_textured_mesh, eval_get3d_angles, generate_random_camera, generate_rotate_camera_list
-# from torch.utils.tensorboard import SummaryWriter
-
-# writer = SummaryWriter('./runs/')
+from get3d_utils import constructGenerator, eval_get3d_angles, generate_random_camera, generate_rotate_camera_list
 
 class LayerTransform(torch.nn.Module):
     def __init__(self):
@@ -35,24 +32,12 @@ class LatentMapper(torch.nn.Module):
         super(LatentMapper, self).__init__()
         self.num_ws_geo = 22
         self.num_ws_tex = 9
-
-        # self.geo_mapper = torch.nn.ModuleList([LayerTransform() for _ in range(self.num_ws_geo)])
-        # self.tex_mapper = torch.nn.ModuleList([LayerTransform() for _ in range(self.num_ws_tex)])
-        
-        
-        # self.tex_mapper = LayerTransform()
         
         #self.geo_mapper_nums = [0, 5, 11, 15, 20, 22]
         self.geo_mapper_nums = [0, 22]
         self.geo_mapper = torch.nn.ModuleList([LayerTransform() for _ in self.geo_mapper_nums[1:]])
 
-        # self.geo_mapper_triplane = torch.nn.ModuleList([LayerTransform() for _ in self.geo_mapper_nums[1:]])
-        # self.geo_mapper_sdf_def = LayerTransform()
-        # self.geo_mapper = LayerTransform()
-
-        # self.tex_mapper = LayerTransform()
-
-        #self.apply(self._init_weights)
+        self.tex_mapper = LayerTransform()
 
         # ws_geo
         # 0 -> tri_plane_synthesis_num_ws_geo : features
@@ -63,6 +48,7 @@ class LatentMapper(torch.nn.Module):
         # 0 -> tri_plane_synthesis_num_ws_tex : features
         # 0 -> 0, 1->1, 2->2, 3->3, 4->4, 5->5 6->tri_plane_synthesis_num_tex_geo - 1
         # 9 -> 11 : rgb
+
     @torch.no_grad()
     def _init_weights(self, module):
         if isinstance(module, torch.nn.Linear):
@@ -73,17 +59,12 @@ class LatentMapper(torch.nn.Module):
 
     def forward(self, ws_geo, ws_tex):
         add_geo = torch.cat([self.geo_mapper[i](ws_geo[:,self.geo_mapper_nums[i]:num]) for i, num in enumerate(self.geo_mapper_nums[1:])], dim=1)
-        # print([(i, num) for i, num in enumerate(self.geo_mapper_nums[1:])])
-        # print([self.geo_mapper[i](ws_geo[:,self.geo_mapper_nums[i]:num]) for i, num in enumerate(self.geo_mapper_nums[1:])])
-        # print(add_geo.shape)
-        # add_tex = self.tex_mapper(ws_tex)
-        return ws_geo + add_geo, ws_tex
-        #return ws_geo + torch.cat([self.geo_mapper[i](ws_geo[:,self.geo_mapper_nums[i-1]:num]) for i, num in enumerate(self.geo_mapper_nums[1:])], dim=1), ws_tex + self.tex_mapper(ws_tex)
+        add_tex = self.tex_mapper(ws_tex)
+        return ws_geo + add_geo, ws_tex + add_tex
 
 def train_eval(G, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, intermediate_space=False, loss_type = 'global'):
     camera_list = generate_rotate_camera_list()[::4]
-    # camera_list = [camera_list[4]]
-    
+
     g_ema = copy.deepcopy(G).eval()
 
     clip_loss = CLIPLoss(source_text='car', target_text=text_prompt, corpus=['Sports Car', 'SUV', 'Hatchback', 'Sedan'], aux_string='')
@@ -111,9 +92,6 @@ def train_eval(G, text_prompt, n_epochs=5, lmbda_1=0.0015, lmbda_2=0.0015, inter
     z_tex_split = torch.split(train_z_tex, n_batch, dim=0)
 
     metrics_save = {'Training CLIP Loss': [], 'Validation CLIP Loss': [], 'Geo Loss': [], 'Tex Loss': []}
-
-    # writer.add_graph(latent_mapper, (validation_geo[0].unsqueeze(0), validation_tex[0].unsqueeze(0)))
-    # writer.close()
 
     # with torch.profiler.profile(
     #         schedule=torch.profiler.schedule(wait=3, warmup=3, active=3, repeat=1),
@@ -233,4 +211,3 @@ if __name__ == "__main__":
 
     with open(f'metrics/foo_latent_mapper_{text_prompt}_{loss_type_}_metrics.pickle', 'wb') as f:
         pickle.dump(metrics_save, f)
-

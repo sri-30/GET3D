@@ -8,78 +8,62 @@ from sklearn.decomposition import PCA
 
 DEVICE='cuda'
 
-# project v onto the direction of u
-def project_to_vector(v, u):
-    return (u.dot(v) / u.dot(u)) * u.clone()
 
-
-# perform Gram-Schmidt process to make a set of vectors orthonormal
-# each row of vv is a given vector
 @torch.no_grad()
-def gram_schmidt(vv):
-    nk = vv.size(0)
-    uu = torch.zeros_like(vv, device=vv.device, dtype=vv.dtype)
-    uu[0] += vv[0]
-    for k in range(1, nk):
-        uu[k] += vv[k]
-        for j in range(0, k):
-            uu[k] -= project_to_vector(vv[k], uu[j])
-        uu[k] /= uu[k].norm()
-    return uu
+def gram_schmidt(V):
+    U = torch.zeros_like(V)
+    U[0] = V[0] / V[0].norm()
+    for i in range(1, U.shape[0]):
+        U[i] = V[i]
+        for j in range(0, i):
+            U[i] -= (U[j].dot(U[i])) * U[j]
+        U[i] = U[i] / U[i].norm()
+    return U
 
-def get_pae_PCA_basis(n_components=10, embeddings=[]):
-    # No precomputed basis. Compute now
-    all_embeddings = embeddings
-    type_before = all_embeddings.dtype
-    all_embeddings = StandardScaler().fit_transform(all_embeddings.cpu().numpy())
+@torch.no_grad()
+def PCA_basis(embeddings, n_components=10):
+    n_components = min(n_components, embeddings.shape[0])
     pca = PCA(n_components=n_components)
-    pca.fit(all_embeddings)
-    basis = torch.from_numpy(pca.components_).to(DEVICE).to(type_before)
+    ss = StandardScaler()
+    pca.fit(ss.fit_transform(embeddings.cpu()))
+    basis = torch.from_numpy(ss.inverse_transform(pca.components_)).to(DEVICE).to(embeddings.dtype)
     return basis
 
 
 @torch.no_grad()
 def get_pae(model, args, image_features, text_features, all_texts):
-    semantic_basis_text = all_texts
-    subspace_basis = clip.tokenize(semantic_basis_text).to(DEVICE)
-    subspace_basis = model.encode_text(subspace_basis)
+    corpus_tokenized = clip.tokenize(all_texts).to(DEVICE)
+    corpus_embeddings = model.encode_text(corpus_tokenized)
 
+    # Projection
     if "GS" in args['target']:
-        subspace_basis = F.normalize(subspace_basis)
+        subspace_basis = F.normalize(corpus_embeddings)
         subspace_basis = gram_schmidt(subspace_basis)
         text_coeff_sum = (text_features @ subspace_basis.T).sum(dim=-1)
     elif "PCA" in args['target']:
-        subspace_basis = get_pae_PCA_basis(n_components=args['components'], embeddings=subspace_basis)
+        subspace_basis = PCA_basis(corpus_embeddings, n_components=args['components'])
         text_coeff_sum = (text_features @ subspace_basis.T).sum(dim=-1)
     elif "None" in args['target']:
-        subspace_basis = F.normalize(subspace_basis)
+        subspace_basis = F.normalize(corpus_embeddings)
         text_coeff_sum = torch.ones(text_features.shape[0], device=DEVICE, dtype=text_features.dtype)
     else:
-        subspace_basis = F.normalize(subspace_basis)
+        subspace_basis = F.normalize(corpus_embeddings)
         text_coeff_sum = (text_features @ subspace_basis.T).sum(dim=-1)
-        print("yes")
     image_coeff = image_features @ subspace_basis.T
-    image_coeff_abs = args['power'] * abs(image_coeff)
 
-    # augmentation
+    # Augmentation
     targets = []
     for i, text_feature in enumerate(text_features):
         for j, image_feature in enumerate(image_features):
             target = image_feature.clone()
-            if "Ex" in args['target']:
-                target = image_feature + args['power'] * text_feature - to_deduct_per_img[j]
-            elif "+" in args['target']:
-                shift = 0
-                for k, basis_vector in enumerate(subspace_basis):
-                    coeff = image_coeff_abs[j][k]
-                    shift += coeff
-                    target -= image_coeff_abs[j][k] * basis_vector
-                target += (shift / text_coeff_sum[i]) * text_feature
-            else: # pae
+            if "+" in args['target']:
+                target -= (args['power'] * abs(image_coeff[j])) @ subspace_basis
+                target += (args['power'] * abs(image_coeff[j]).sum() / text_coeff_sum[i]) * text_feature
+            else:
                 target += args['power'] * text_feature
             targets.append(target)
     targets = torch.stack(targets)
-    return targets
+    return F.normalize(targets, dim=-1)
 
 class CLIPLoss(torch.nn.Module):
 

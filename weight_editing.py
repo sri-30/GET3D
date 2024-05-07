@@ -5,7 +5,8 @@ import pickle
 import time
 
 from clip_utils.clip_loss_nada import CLIPLoss
-from get3d_utils import constructGenerator, eval_get3d_angles, determine_opt_layers, unfreeze_generator_layers, freeze_generator_layers, generate_random_camera, generate_rotate_camera_list
+from get3d_utils import constructGenerator, eval_get3d_angles, generate_random_camera, generate_rotate_camera_list
+from layer_freezing import control_layers, determine_opt_layers
 
 def preprocess_rgb(array):
     lo, hi = -1, 1
@@ -32,6 +33,14 @@ def train_eval(G, text_prompt, n_epochs=5, loss_type='global', clip_grad_norm=No
     g_ema_train.mapping.requires_grad_(False)
     g_ema_train.mapping_geo.requires_grad_(False)
     g_ema_train.train()
+
+    print(list(g_ema_frozen.synthesis.generator.tri_plane_synthesis.children()))
+    print("-------------------------------------------------------------------")
+    print(getattr(g_ema_frozen.synthesis.generator.mlp_synthesis_sdf, 'layers'))
+    print("-------------------------------------------------------------------")
+    print(getattr(g_ema_frozen.synthesis.generator.mlp_synthesis_def, 'layers'))
+    print("-------------------------------------------------------------------")
+    print(getattr(g_ema_frozen.synthesis.generator.mlp_synthesis_tex, 'layers'))
 
     learning_rate = 5e-4
     opt_params = g_ema_train.synthesis.generator.parameters()
@@ -75,10 +84,10 @@ def train_eval(G, text_prompt, n_epochs=5, loss_type='global', clip_grad_norm=No
             print(f'Batch: {j}')
 
             # Layer freezing
-            unfreeze_generator_layers(g_ema_train, [], [])
-            topk_idx_tex, topk_idx_geo = determine_opt_layers(g_ema_frozen, g_ema_train, clip_loss)
-            freeze_generator_layers(g_ema_train)
-            unfreeze_generator_layers(g_ema_train, topk_idx_tex, topk_idx_geo)
+            control_layers(g_ema_train, [], [], True)
+            layers_tex, layers_geo = determine_opt_layers(g_ema_frozen, g_ema_train, clip_loss)
+            control_layers(g_ema_train, [], [], False)
+            control_layers(g_ema_train, layers_tex, layers_geo, True)
 
             loss_log = 0
 
@@ -102,7 +111,7 @@ def train_eval(G, text_prompt, n_epochs=5, loss_type='global', clip_grad_norm=No
                 if loss_type == 'global':
                     loss = clip_loss.global_loss(trainable_img)
                 elif loss_type == 'pae':
-                    loss = clip_loss.projection_augmentation_loss_nada(frozen_img, trainable_img)
+                    loss = clip_loss.projection_augmentation_loss_nada(frozen_img, trainable_img, power=alpha)
                 elif loss_type == 'directional':
                     loss = clip_loss(frozen_img, trainable_img).sum()
                 else:
@@ -156,6 +165,7 @@ if __name__ == "__main__":
     text_prompt= text_prompt_
     n_epochs = 10
     n_samp = 90
+    alpha = 5
 
     camera_num = 7
 
@@ -174,9 +184,9 @@ if __name__ == "__main__":
     else:
         G_new, metrics = train_eval(G_ema, text_prompt, n_epochs=n_epochs, loss_type=loss_type_)
 
-    torch.save(G_new.state_dict(), f'generators_saved/foo_{n_samp}_samples_{text_prompt}_{loss_type_}_generator.pt')
+    torch.save(G_new.state_dict(), f'generators_saved/alpha={alpha}_samples_{text_prompt}_{loss_type_}_generator.pt')
 
-    with open(f'./metrics/foo_weight_transform_{n_samp}_samples_{text_prompt}_{loss_type_}_train_val_loss.pickle', 'wb') as f:
+    with open(f'./metrics/alpha={alpha}_weight_transform_samples_{text_prompt}_{loss_type_}_train_val_loss.pickle', 'wb') as f:
         pickle.dump(metrics, f)
     
     
